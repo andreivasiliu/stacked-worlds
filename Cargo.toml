@@ -1,0 +1,14 @@
+[package]
+name = "hellopiston"
+version = "0.1.0"
+authors = ["Andrei Vasiliu <whyte.vuhuni@gmail.com>"]
+
+[dependencies]
+piston = "*"
+piston2d-graphics = "*"
+pistoncore-glutin_window = "*"
+piston2d-opengl_graphics = "*"
+failure = "*"
+serde_derive = "*"
+serde_json = "*"
+serde = "*"
