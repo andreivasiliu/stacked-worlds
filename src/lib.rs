@@ -15,8 +15,11 @@ extern crate glutin_window;
 #[macro_use]
 extern crate serde_derive;
 extern crate serde_json;
+extern crate specs;
+#[macro_use]
+extern crate specs_derive;
 
-use failure::{Error, ResultExt};
+
 use opengl_graphics::{GlGraphics, OpenGL};
 use glutin_window::GlutinWindow;
 use piston::input::{UpdateEvent, UpdateArgs};
@@ -25,136 +28,104 @@ use piston::input::{PressEvent, ReleaseEvent, Key, Button, MouseButton};
 use piston::input::{MouseCursorEvent};
 use piston::window::WindowSettings;
 use piston::event_loop::{Events, EventSettings};
+use specs::prelude::{World, RunNow};
+use specs::saveload::U64Marker;
+use specs::saveload::U64MarkerAllocator;
+
+mod draw;
+mod input;
+mod animate;
+mod saveload;
+mod error;
+
+use error::{GameError, Error};
+use saveload::{SaveWorld, LoadWorld};
+use draw::run_draw_systems;
+
 
 struct Game {
     gl: GlGraphics,
-    state: GameState,
+    specs_world: World,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct Room {
-    rectangle: [f64; 4],
-
-    #[serde(skip)]
-    animation: u8,
+#[derive(Debug, Default)]
+pub struct MouseInput {
+    pub mouse: (i32, i32),
+    pub dragging_source: (i32, i32),
+    pub dragging: bool,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct GameState {
-    #[serde(skip)]
-    mouse: (f64, f64),
-    #[serde(skip)]
-    dragging: bool,
-    #[serde(skip)]
-    dragging_source: (f64, f64),
+impl MouseInput {
+    pub fn selection_box(&self) -> [i32; 4] {
+        [self.dragging_source.0, self.dragging_source.1, self.mouse.0, self.mouse.1]
+    }
 
-    rooms: Vec<Room>,
-}
+    /// Return an array of type [i32; 4] with [x, y, width, height].
+    pub fn selection_rectangle(&self) -> [i32; 4] {
+        use std::cmp::{min, max};
 
-trait PointsToRectangle<T> {
-    fn to(&self, other: (T, T)) -> [T; 4];
-}
+        let x1 = min(self.dragging_source.0, self.mouse.0);
+        let y1 = min(self.dragging_source.1, self.mouse.1);
+        let x2 = max(self.dragging_source.0, self.mouse.0);
+        let y2 = max(self.dragging_source.1, self.mouse.1);
 
-impl PointsToRectangle<f64> for (f64, f64) {
-    fn to(&self, other: (f64, f64)) -> [f64; 4] {
-        [self.0, self.1, other.0, other.1]
+        [x1, y1, x2 - x1, y2 - y1]
+    }
+
+    pub fn selection_rectangle_f64(&self) -> [f64; 4] {
+        let rect = self.selection_rectangle();
+
+        [rect[0] as f64, rect[1] as f64, rect[2] as f64, rect[3] as f64]
     }
 }
 
 impl Game {
     fn render(&mut self, args: &RenderArgs) {
-        use graphics::{clear, line, rectangle};
-        use graphics::math::Matrix2d;
-
-        fn rectangle_lines(color: [f32; 4], rect: [f64; 4], transform: Matrix2d, gl: &mut GlGraphics) {
-            let lines = [
-                [rect[0], rect[1], rect[2], rect[1]],
-                [rect[2], rect[1], rect[2], rect[3]],
-                [rect[2], rect[3], rect[0], rect[3]],
-                [rect[0], rect[3], rect[0], rect[1]],
-            ];
-
-            for l in lines.into_iter() {
-                line(color, 0.5, *l, transform, gl);
-            }
-        }
-
-        let dragging_region = [
-            self.state.dragging_source.0,
-            self.state.dragging_source.1,
-            self.state.mouse.0,
-            self.state.mouse.1,
-        ];
-//        let (x, y) = ((args.width / 2) as f64,
-//                      (args.height / 2) as f64);
-
-        let dragging = self.state.dragging;
-        let game_state = &self.state;
-
-        self.gl.draw(args.viewport(), |context, gl| {
-            clear([0.0, 0.0, 0.0, 1.0], gl);
-
-            for room in game_state.rooms.iter() {
-                let brightness = 0.25 + 0.75 * (room.animation as f32 / 32.0);
-                let color = [brightness, brightness, brightness, 1.0];
-                rectangle_lines(color, room.rectangle, context.transform, gl);
-            }
-
-            if dragging {
-                let r = rectangle::rectangle_by_corners(
-                    dragging_region[0],
-                    dragging_region[1],
-                    dragging_region[2],
-                    dragging_region[3],
-                );
-
-                rectangle_lines([0.25, 1.0, 0.25, 1.0], dragging_region, context.transform, gl);
-                rectangle([0.25, 1.0, 0.25, 0.01], r, context.transform, gl);
-            }
-        });
+        run_draw_systems(&mut self.specs_world, &mut self.gl, *args);
     }
 
     fn update(&mut self, _args: &UpdateArgs) {
-        for room in self.state.rooms.iter_mut() {
-            if room.animation > 0 {
-                room.animation -= 1;
-            }
-        }
+        animate::UpdateAnimations.run_now(&mut self.specs_world.res);
     }
 
     fn press(&mut self, args: &Button) {
         if let &Button::Mouse(MouseButton::Left) = args {
-            self.state.dragging = true;
-            self.state.dragging_source = self.state.mouse;
+            let mut mouse_input = self.specs_world.write_resource::<MouseInput>();
+
+            mouse_input.dragging = true;
+            mouse_input.dragging_source = mouse_input.mouse;
         }
 
         if let &Button::Keyboard(Key::R) = args {
-            self.state.rooms.clear();
+            saveload::ResetWorld.run_now(&mut self.specs_world.res);
+            self.specs_world.maintain();
         }
     }
 
     fn release(&mut self, args: &Button) {
         if let &Button::Mouse(MouseButton::Left) = args {
-            self.state.dragging = false;
-
-            let new_room = Room {
-                rectangle: self.state.dragging_source.to(self.state.mouse),
-                animation: 32,
+            let rect = {
+                let mut mouse_input = self.specs_world.write_resource::<MouseInput>();
+                mouse_input.dragging = false;
+                mouse_input.selection_rectangle()
+                // Drop .write_resource()'s borrow so we can access .create_entity() later
             };
 
-            self.state.rooms.push(new_room);
+            let (x, y, width, height) = (rect[0], rect[1], rect[2], rect[3]);
+
+            self.specs_world.create_entity()
+                .with(draw::Position { x, y})
+                .with(draw::Size { width, height })
+                .with(animate::Animation::<animate::RoomAnimation>::new(32))
+                .marked::<U64Marker>()
+                .build();
         }
     }
 
     fn mouse_cursor(&mut self, x: f64, y: f64) {
-        self.state.mouse = (x, y);
+        let mut mouse_input = self.specs_world.write_resource::<MouseInput>();
+        mouse_input.mouse = (x as i32, y as i32);
     }
-}
-
-#[derive(Debug, Fail)]
-enum GameError {
-    #[fail(display = "cannot create game window: {}", reason)]
-    WindowError { reason: String }
 }
 
 pub fn run() -> Result<(), Error> {
@@ -166,26 +137,38 @@ pub fn run() -> Result<(), Error> {
         .build()
         .map_err(|err| GameError::WindowError { reason: err })?;
 
-    let game_state = {
-        let state_file = std::fs::File::open("state.json");
+//    let game_state = {
+//        let state_file = std::fs::File::open("state.json");
+//
+//        match state_file {
+//            Ok(state_file) =>
+//                serde_json::from_reader::<_, GameState>(state_file)
+//                    .context("Cannot deserialize game state file")?,
+//            Err(err) =>
+//                if err.kind() == std::io::ErrorKind::NotFound {
+//                    GameState::default()
+//                } else {
+//                    return Err(Error::from(err).context("Cannot open game state file").into())
+//                },
+//        }
+//    };
 
-        match state_file {
-            Ok(state_file) =>
-                serde_json::from_reader::<_, GameState>(state_file)
-                    .context("Cannot deserialize game state file")?,
-            Err(err) =>
-                if err.kind() == std::io::ErrorKind::NotFound {
-                    GameState::default()
-                } else {
-                    return Err(Error::from(err).context("Cannot open game state file").into())
-                },
-        }
-    };
+    let mut world = World::new();
+
+    world.register::<draw::Position>();
+    world.register::<draw::Size>();
+    world.register::<animate::Animation<animate::RoomAnimation>>();
+    world.register::<U64Marker>();
+
+    world.add_resource(U64MarkerAllocator::new());
+    world.add_resource(MouseInput::default());
 
     let mut game = Game {
         gl: GlGraphics::new(opengl_version),
-        state: game_state,
+        specs_world: world,
     };
+
+    LoadWorld { file_name: "storage.ron".into() }.run_now(&mut game.specs_world.res);
 
     let mut events = Events::new(EventSettings::new());
 
@@ -211,10 +194,12 @@ pub fn run() -> Result<(), Error> {
         }
     }
 
-    let state_file = std::fs::File::create("state.json")
-        .context("Cannot create file to save game state")?;
-    serde_json::to_writer(state_file, &game.state)
-        .context("Cannot write game state to file")?;
+    SaveWorld { file_name: "storage.ron".into() }.run_now(&game.specs_world.res);
+
+//    let state_file = std::fs::File::create("state.json")
+//        .context("Cannot create file to save game state")?;
+//    serde_json::to_writer(state_file, &game.state)
+//        .context("Cannot write game state to file")?;
 
     Ok(())
 }

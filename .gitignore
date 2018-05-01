@@ -3,4 +3,5 @@
 **/*.rs.bk
 Cargo.lock
 state.json
+storage.ron
 .idea

@@ -12,3 +12,6 @@ failure = "*"
 serde_derive = "*"
 serde_json = "*"
 serde = "*"
+specs = { version = "0.11.0-alpha5", features = ["serde"] }
+specs-derive = "0.2"
+ron = "*"
