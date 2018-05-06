@@ -3,10 +3,13 @@ extern crate ron;
 
 use specs::saveload::{DeserializeComponents, SerializeComponents, U64Marker, U64MarkerAllocator};
 use specs::prelude::{System, Entities, ReadStorage, Join, Write, WriteStorage};
+use specs::storage::NullStorage;
 
 use error::Error;
 use draw::{Position, Size};
 use animate::{Animation, RoomAnimation};
+use physics::Room;
+use physics::InRoom;
 
 pub struct SaveWorld {
     pub file_name: String,
@@ -17,14 +20,16 @@ impl <'a> System<'a> for SaveWorld {
         Entities<'a>,
         ReadStorage<'a, Position>,
         ReadStorage<'a, Size>,
+        ReadStorage<'a, Room>,
+        ReadStorage<'a, InRoom>,
         ReadStorage<'a, Animation<RoomAnimation>>,
         ReadStorage<'a, U64Marker>,
     );
 
-    fn run(&mut self, (entities, positions, sizes, animations, markers): Self::SystemData) {
+    fn run(&mut self, (entities, positions, sizes, rooms, in_rooms, animations, markers): Self::SystemData) {
         let mut serializer = ron::ser::Serializer::new(Some(Default::default()), true);
         SerializeComponents::<Error, U64Marker>::serialize(
-            &(&positions, &sizes, &animations),
+            &(&positions, &sizes, &rooms, &in_rooms, &animations),
             &entities,
             &markers,
             &mut serializer
@@ -55,11 +60,13 @@ impl <'a> System<'a> for LoadWorld {
         Write<'a, U64MarkerAllocator>,
         WriteStorage<'a, Position>,
         WriteStorage<'a, Size>,
+        WriteStorage<'a, Room>,
+        WriteStorage<'a, InRoom>,
         WriteStorage<'a, Animation<RoomAnimation>>,
         WriteStorage<'a, U64Marker>,
     );
 
-    fn run(&mut self, (entities, mut allocator, positions, sizes, animations, mut markers): Self::SystemData) {
+    fn run(&mut self, (entities, mut allocator, positions, sizes, rooms, in_rooms, animations, mut markers): Self::SystemData) {
         use ::std::fs::File;
         use ::std::io::Read;
 
@@ -76,7 +83,7 @@ impl <'a> System<'a> for LoadWorld {
             .expect("Could not load"); // FIXME: handle error
 
         DeserializeComponents::<Error, _>::deserialize(
-            &mut (positions, sizes, animations),
+            &mut (positions, sizes, rooms, in_rooms, animations),
             &entities,
             &mut markers,
             &mut allocator,
@@ -87,13 +94,35 @@ impl <'a> System<'a> for LoadWorld {
     }
 }
 
+#[derive(Component, Debug, Default, Clone, Copy)]
+#[storage(NullStorage)]
+pub struct DestroyEntity;
+
 pub struct ResetWorld;
 
 impl <'a> System<'a> for ResetWorld {
-    type SystemData = Entities<'a>;
+    type SystemData = (
+        Entities<'a>,
+        WriteStorage<'a, DestroyEntity>,
+    );
 
-    fn run(&mut self, entities: Self::SystemData) {
+    fn run(&mut self, (entities, mut destroy_entities): Self::SystemData) {
         for entity in entities.join() {
+            destroy_entities.insert(entity, DestroyEntity);
+        }
+    }
+}
+
+pub struct DestroyEntities;
+
+impl <'a> System<'a> for DestroyEntities {
+    type SystemData = (
+        Entities<'a>,
+        ReadStorage<'a, DestroyEntity>,
+    );
+
+    fn run(&mut self, (entities, destroy_entities): Self::SystemData) {
+        for (entity, _destroy_entity) in (&*entities, &destroy_entities).join() {
             entities.delete(entity)
                 .expect("Error deleting entity during world reset");
         }

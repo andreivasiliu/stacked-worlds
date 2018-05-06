@@ -6,6 +6,7 @@ use piston::input::RenderArgs;
 use opengl_graphics::GlGraphics;
 use MouseInput;
 use animate::{Animation, RoomAnimation};
+use physics::InRoom;
 
 #[derive(Debug, Component, Serialize, Deserialize, Clone, Copy)]
 #[storage(VecStorage)]
@@ -20,6 +21,10 @@ pub struct Size {
     pub width: i32,
     pub height: i32,
 }
+
+#[derive(Component, Debug, Serialize, Deserialize, Clone, Copy)]
+#[storage(VecStorage)]
+pub struct Room;
 
 //#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 //pub struct Animator {
@@ -98,6 +103,41 @@ impl <'a, 'b> System<'a> for DrawRooms<'b> {
     }
 }
 
+pub struct DrawBalls<'a> {
+    pub gl_graphics: &'a mut GlGraphics,
+    pub render_args: RenderArgs,
+}
+
+impl <'a, 'b> System<'a> for DrawBalls<'b> {
+    type SystemData = (
+        Entities<'a>,
+        ReadStorage<'a, Position>,
+        ReadStorage<'a, InRoom>,
+    );
+
+    fn run(&mut self, (entities, positions, in_rooms): Self::SystemData) {
+        for (_entity, position, in_room) in (&*entities, &positions, &in_rooms).join() {
+            let room_entity = entities.entity(in_room.room_entity);
+
+            let room_position = match positions.get(room_entity) {
+                Some(room_position) => room_position,
+                None => continue,
+            };
+
+            self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
+                use graphics::{Transformed, circle_arc};
+
+                let rect = [position.x as f64 - 10.0, position.y as f64 - 10.0, 20.0, 20.0]; // FIXME: native
+                let context = context.trans(room_position.x as f64, room_position.y as f64); // FIXME: native
+//                rectangle([0.2, 0.2, 0.5, 0.01], room_rectangle, context.transform, gl);
+
+                circle_arc([0.0, 0.0, 1.0, 1.0], 0.5, 0.0, 2.0 * 3.1415, // FIXME: pi
+                           rect, context.transform, gl);
+            });
+        }
+    }
+}
+
 pub struct DrawSelectionBox<'a> {
     pub gl_graphics: &'a mut GlGraphics,
     pub render_args: RenderArgs,
@@ -129,6 +169,9 @@ pub fn run_draw_systems(specs_world: &mut World,
         .run_now(&mut specs_world.res);
 
     DrawRooms { gl_graphics, render_args }
+        .run_now(&mut specs_world.res);
+
+    DrawBalls { gl_graphics, render_args }
         .run_now(&mut specs_world.res);
 
     DrawSelectionBox { gl_graphics, render_args }

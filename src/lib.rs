@@ -1,3 +1,31 @@
+/// Systems:
+/// saveload:
+///   - `LoadWorld`
+///   - `SaveWorld`
+///   - `ResetWorld`
+/// draw.rs:
+///   - `ClearScreen`
+///   - `DrawRooms`
+///   - `DrawSelectionBox`
+/// animate.rs:
+///   - `UpdateAnimations`
+/// physics:
+///   - `PhysicsSystem`
+///
+/// Components:
+/// lib.rs:
+///   - `Position`
+///   - `Size`
+///   - `Room`
+/// animate.rs:
+///   - `Animation<T>`
+/// physics.rs:
+///   - `PhysicalObject`
+///   - `PhysicalRoom`?
+/// saveload.rs:
+///   - `DestroyEntity`
+
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -18,6 +46,10 @@ extern crate serde_json;
 extern crate specs;
 #[macro_use]
 extern crate specs_derive;
+extern crate ron;
+extern crate nalgebra;
+extern crate nphysics2d;
+extern crate ncollide;
 
 
 use opengl_graphics::{GlGraphics, OpenGL};
@@ -35,17 +67,20 @@ use specs::saveload::U64MarkerAllocator;
 mod draw;
 mod input;
 mod animate;
+mod physics;
 mod saveload;
 mod error;
 
 use error::{GameError, Error};
-use saveload::{SaveWorld, LoadWorld};
+use saveload::{SaveWorld, LoadWorld, DestroyEntity};
 use draw::run_draw_systems;
+use physics::PhysicsSystem;
 
 
 struct Game {
     gl: GlGraphics,
     specs_world: World,
+    physics_system: PhysicsSystem,
 }
 
 #[derive(Debug, Default)]
@@ -79,13 +114,28 @@ impl MouseInput {
     }
 }
 
+pub struct UpdateDeltaTime {
+    pub dt: f64,
+}
+
 impl Game {
     fn render(&mut self, args: &RenderArgs) {
         run_draw_systems(&mut self.specs_world, &mut self.gl, *args);
     }
 
-    fn update(&mut self, _args: &UpdateArgs) {
+    fn update(&mut self, args: &UpdateArgs) {
+        let () = {
+            let mut update_delta_time = self.specs_world.write_resource::<UpdateDeltaTime>();
+            update_delta_time.dt = args.dt;
+        };
+
+        self.physics_system.run_now(&mut self.specs_world.res);
         animate::UpdateAnimations.run_now(&mut self.specs_world.res);
+
+        // Must be left at the end in order to allow every other system to react on destroyed
+        // entities.
+        saveload::DestroyEntities.run_now(&mut self.specs_world.res);
+        self.specs_world.maintain();
     }
 
     fn press(&mut self, args: &Button) {
@@ -113,10 +163,23 @@ impl Game {
 
             let (x, y, width, height) = (rect[0], rect[1], rect[2], rect[3]);
 
-            self.specs_world.create_entity()
+            let entity = self.specs_world.create_entity()
                 .with(draw::Position { x, y})
                 .with(draw::Size { width, height })
+                .with(physics::Room)
                 .with(animate::Animation::<animate::RoomAnimation>::new(32))
+                .marked::<U64Marker>()
+                .build();
+
+            self.specs_world.create_entity()
+                .with(draw::Position { x: width / 2 + 5, y: height / 2 + 10 })
+                .with(physics::InRoom { room_entity: entity.id() })
+                .marked::<U64Marker>()
+                .build();
+
+            self.specs_world.create_entity()
+                .with(draw::Position { x: width / 2 - 5, y: height / 2 - 10 })
+                .with(physics::InRoom { room_entity: entity.id() })
                 .marked::<U64Marker>()
                 .build();
         }
@@ -155,16 +218,21 @@ pub fn run() -> Result<(), Error> {
 
     let mut world = World::new();
 
+    world.register::<saveload::DestroyEntity>();
     world.register::<draw::Position>();
     world.register::<draw::Size>();
     world.register::<animate::Animation<animate::RoomAnimation>>();
+    world.register::<physics::Room>();
+    world.register::<physics::InRoom>();
     world.register::<U64Marker>();
 
     world.add_resource(U64MarkerAllocator::new());
     world.add_resource(MouseInput::default());
+    world.add_resource(UpdateDeltaTime { dt: 0.0 });
 
     let mut game = Game {
         gl: GlGraphics::new(opengl_version),
+        physics_system: PhysicsSystem::new(),
         specs_world: world,
     };
 
