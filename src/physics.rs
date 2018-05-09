@@ -3,13 +3,11 @@ extern crate nphysics2d;
 extern crate ncollide;
 
 use specs::prelude::{WriteStorage, ReadStorage, VecStorage, System, Entities, Join};
-use specs::prelude::{FlaggedStorage, BitSet, ReaderId, ModifiedFlag, InsertedFlag, RemovedFlag};
 use nphysics2d::world::World;
 use nalgebra::{Vector2, Translation2};
 use nphysics2d::object::RigidBody;
 use ncollide::shape::Ball;
 use saveload::DestroyEntity;
-use std::collections::HashSet;
 use std::collections::HashMap;
 use nphysics2d::object::RigidBodyHandle;
 use nalgebra::Real;
@@ -34,6 +32,20 @@ pub struct InRoom {
     pub room_entity: Index,
 }
 
+#[derive(Component, Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[storage(VecStorage)]
+pub struct Velocity {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Component, Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[storage(VecStorage)]
+pub struct Acceleration {
+    pub x: f64,
+    pub y: f64,
+}
+
 struct PhysicalObject<N: Real> {
     body: RigidBodyHandle<N>,
 }
@@ -43,18 +55,8 @@ struct PhysicalRoom<N: Real> {
     walls: [RigidBodyHandle<N>; 4],
 }
 
-pub struct ComponentEvents {
-    inserted_id: ReaderId<InsertedFlag>,
-    inserted: BitSet,
-    modified_id: ReaderId<ModifiedFlag>,
-    modified: BitSet,
-    removed_id: ReaderId<RemovedFlag>,
-    removed: BitSet,
-}
-
 pub struct PhysicsSystem<N: Real = f64> {
     world: World<N>,
-    groups: HashSet<usize>,
     physical_objects: HashMap<Entity, PhysicalObject<N>>,
     physical_rooms: HashMap<Entity, PhysicalRoom<N>>,
 }
@@ -63,11 +65,10 @@ impl PhysicsSystem<f64> {
     pub fn new() -> Self {
         let mut world = World::new();
 
-        world.set_gravity(Vector2::new(0.0, 9.81));
+        world.set_gravity(Vector2::new(0.0, 10.0 * 9.81));
 
         PhysicsSystem {
             world,
-            groups: HashSet::new(),
             physical_objects: HashMap::new(),
             physical_rooms: HashMap::new(),
         }
@@ -82,14 +83,15 @@ impl<'a> System<'a> for PhysicsSystem {
         ReadStorage<'a, Size>,
         //ReadStorage<'a, Shape>, // eventually...
         WriteStorage<'a, Position>,
-        //WriteStorage<'a, Velocity>, // eventually...
+        WriteStorage<'a, Velocity>,
+        ReadStorage<'a, Acceleration>,
         //WriteStorage<'a, Angle>, // eventually...
         ReadStorage<'a, DestroyEntity>,
         ReadExpect<'a, UpdateDeltaTime>,
     );
 
-    fn run(&mut self, (entities, rooms, in_rooms, sizes, mut positions, destroy_entities, delta_time): Self::SystemData) {
-        for (entity, _room, mut position, size) in (&*entities, &rooms, &positions, &sizes).join() {
+    fn run(&mut self, (entities, rooms, in_rooms, sizes, mut positions, mut velocities, accelerations, destroy_entities, delta_time): Self::SystemData) {
+        for (entity, _room, size) in (&*entities, &rooms, &sizes).join() {
             let world = &mut self.world;
             let physical_rooms = &mut self.physical_rooms;
 
@@ -102,17 +104,17 @@ impl<'a> System<'a> for PhysicsSystem {
 
                     let mut south_wall = RigidBody::new_static(south_wall, 0.5, 0.5);
                     let mut north_wall = RigidBody::new_static(north_wall, 0.5, 0.5);
-                    north_wall.append_translation(&Translation2::new(0.0, size.height as f64));
+                    north_wall.append_translation(&Translation2::new(0.0, size.height));
                     let mut west_wall = RigidBody::new_static(west_wall, 0.5, 0.5);
                     let mut east_wall = RigidBody::new_static(east_wall, 0.5, 0.5);
-                    east_wall.append_translation(&Translation2::new(size.width as f64, 0.0)); // FIXME: switch to native
+                    east_wall.append_translation(&Translation2::new(size.width, 0.0));
 
                     // Set a collision group so that this room's walls and the objects inside can
                     // only collide with each other.
                     let collision_group = entity.id() as usize; // FIXME: :(
                     let mut collision_groups = RigidBodyCollisionGroups::new_static();
                     collision_groups.set_membership(&[collision_group]);
-                    collision_groups.set_membership(&[collision_group]);
+                    collision_groups.set_whitelist(&[collision_group]);
 
                     south_wall.set_collision_groups(collision_groups);
                     north_wall.set_collision_groups(collision_groups);
@@ -132,7 +134,7 @@ impl<'a> System<'a> for PhysicsSystem {
                 });
         }
 
-        for (entity, in_room, position) in (&*entities, &in_rooms, &mut positions).join() {
+        for (entity, in_room, position, velocity) in (&*entities, &in_rooms, &mut positions, &mut velocities).join() {
             let world = &mut self.world;
             let physical_objects = &mut self.physical_objects;
 
@@ -146,7 +148,8 @@ impl<'a> System<'a> for PhysicsSystem {
                     collision_groups.set_whitelist(&[collision_group]);
                     body.set_collision_groups(collision_groups);
 
-                    body.set_translation(Translation2::new(position.x as f64, position.y as f64));
+                    body.set_translation(Translation2::new(position.x, position.y));
+                    body.set_lin_vel(Vector2::new(velocity.x, velocity.y));
 
                     let body = world.add_rigid_body(body);
 
@@ -157,9 +160,41 @@ impl<'a> System<'a> for PhysicsSystem {
                     }
                 });
 
-            let physical_position = physical_object.body.borrow().position_center();
-            position.x = physical_position.x as i32;
-            position.y = physical_position.y as i32;
+            let rigid_body = physical_object.body.borrow();
+
+            let physical_position = rigid_body.position_center();
+            position.x = physical_position.x;
+            position.y = physical_position.y;
+
+            let physical_velocity = rigid_body.lin_vel();
+            velocity.x = physical_velocity.x;
+            velocity.y = physical_velocity.y;
+        }
+
+        for (entity, acceleration) in (&*entities, &accelerations).join() {
+            if let Some(mut physical_object) = self.physical_objects.get(&entity) {
+                let acceleration = Vector2::new(acceleration.x, acceleration.y);
+                let mut rigid_body = physical_object.body.borrow_mut();
+                rigid_body.clear_forces();
+                rigid_body.append_lin_force(acceleration);
+            }
+        }
+
+        for (entity, _destroy_entity, _in_room) in (&*entities, &destroy_entities, &in_rooms).join() {
+            if let Some(physical_object) = self.physical_objects.remove(&entity) {
+                self.world.remove_rigid_body(&physical_object.body);
+                println!("Destroyed object {:?}", entity);
+            }
+        }
+
+        for (entity, _destroy_entity, _room) in (&*entities, &destroy_entities, &rooms).join() {
+            if let Some(physical_room) = self.physical_rooms.remove(&entity) {
+                for wall in physical_room.walls.iter() {
+                    self.world.remove_rigid_body(wall);
+                }
+                println!("Destroyed room {:?}", entity);
+            }
+            // FIXME: destroy objects in the room too
         }
 
         self.world.step(delta_time.dt);
@@ -167,6 +202,8 @@ impl<'a> System<'a> for PhysicsSystem {
 }
 
 /*
+use specs::prelude::{FlaggedStorage, BitSet, ReaderId, ModifiedFlag, InsertedFlag, RemovedFlag};
+
 #[derive(Component, Debug, Serialize, Deserialize, Clone, Copy)]
 #[storage(FlaggedStorage)]
 pub struct OldPhysicalObject;
@@ -175,6 +212,15 @@ impl OldPhysicalObject {
     pub fn new_static() -> Self {
         OldPhysicalObject { }
     }
+}
+
+pub struct ComponentEvents {
+    inserted_id: ReaderId<InsertedFlag>,
+    inserted: BitSet,
+    modified_id: ReaderId<ModifiedFlag>,
+    modified: BitSet,
+    removed_id: ReaderId<RemovedFlag>,
+    removed: BitSet,
 }
 
 pub struct OldPhysicsSystem<N: Real = f64> {

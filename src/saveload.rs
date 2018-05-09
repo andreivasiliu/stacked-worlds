@@ -10,6 +10,9 @@ use draw::{Position, Size};
 use animate::{Animation, RoomAnimation};
 use physics::Room;
 use physics::InRoom;
+use input::PlayerController;
+use physics::Acceleration;
+use physics::Velocity;
 
 pub struct SaveWorld {
     pub file_name: String,
@@ -22,14 +25,17 @@ impl <'a> System<'a> for SaveWorld {
         ReadStorage<'a, Size>,
         ReadStorage<'a, Room>,
         ReadStorage<'a, InRoom>,
+        ReadStorage<'a, PlayerController>,
+        ReadStorage<'a, Velocity>,
+        ReadStorage<'a, Acceleration>,
         ReadStorage<'a, Animation<RoomAnimation>>,
         ReadStorage<'a, U64Marker>,
     );
 
-    fn run(&mut self, (entities, positions, sizes, rooms, in_rooms, animations, markers): Self::SystemData) {
+    fn run(&mut self, (entities, positions, sizes, rooms, in_rooms, player_controllers, velocities, accelerations, animations, markers): Self::SystemData) {
         let mut serializer = ron::ser::Serializer::new(Some(Default::default()), true);
         SerializeComponents::<Error, U64Marker>::serialize(
-            &(&positions, &sizes, &rooms, &in_rooms, &animations),
+            &(&positions, &sizes, &rooms, &in_rooms, &player_controllers, &velocities, &accelerations, &animations),
             &entities,
             &markers,
             &mut serializer
@@ -62,11 +68,16 @@ impl <'a> System<'a> for LoadWorld {
         WriteStorage<'a, Size>,
         WriteStorage<'a, Room>,
         WriteStorage<'a, InRoom>,
+        WriteStorage<'a, PlayerController>,
+        WriteStorage<'a, Velocity>,
+        WriteStorage<'a, Acceleration>,
         WriteStorage<'a, Animation<RoomAnimation>>,
         WriteStorage<'a, U64Marker>,
     );
 
-    fn run(&mut self, (entities, mut allocator, positions, sizes, rooms, in_rooms, animations, mut markers): Self::SystemData) {
+    fn run(&mut self, (entities, mut allocator, positions, sizes, rooms, in_rooms,
+        player_controllers, velocities, accelerations, animations, mut markers)
+    : Self::SystemData) {
         use ::std::fs::File;
         use ::std::io::Read;
 
@@ -83,7 +94,7 @@ impl <'a> System<'a> for LoadWorld {
             .expect("Could not load"); // FIXME: handle error
 
         DeserializeComponents::<Error, _>::deserialize(
-            &mut (positions, sizes, rooms, in_rooms, animations),
+            &mut (positions, sizes, rooms, in_rooms, player_controllers, velocities, accelerations, animations),
             &entities,
             &mut markers,
             &mut allocator,

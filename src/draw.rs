@@ -11,15 +11,15 @@ use physics::InRoom;
 #[derive(Debug, Component, Serialize, Deserialize, Clone, Copy)]
 #[storage(VecStorage)]
 pub struct Position {
-    pub x: i32,
-    pub y: i32,
+    pub x: f64,
+    pub y: f64,
 }
 
 #[derive(Component, Debug, Serialize, Deserialize, Clone, Copy)]
 #[storage(VecStorage)]
 pub struct Size {
-    pub width: i32,
-    pub height: i32,
+    pub width: f64,
+    pub height: f64,
 }
 
 #[derive(Component, Debug, Serialize, Deserialize, Clone, Copy)]
@@ -78,7 +78,7 @@ impl <'a, 'b> System<'a> for DrawRooms<'b> {
 
     fn run(&mut self, (entities, positions, sizes, animations): Self::SystemData) {
         for (_entity, position, size, animation) in (&*entities, &positions, &sizes, &animations).join() {
-            if size.width < 5 || size.height < 5 {
+            if size.width < 5.0 || size.height < 5.0 {
                 continue;
             }
 
@@ -127,11 +127,12 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
             self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
                 use graphics::{Transformed, circle_arc};
 
-                let rect = [position.x as f64 - 10.0, position.y as f64 - 10.0, 20.0, 20.0]; // FIXME: native
-                let context = context.trans(room_position.x as f64, room_position.y as f64); // FIXME: native
+                let rect = [position.x - 10.0, position.y - 10.0, 20.0, 20.0];
+                let context = context.trans(room_position.x, room_position.y);
 //                rectangle([0.2, 0.2, 0.5, 0.01], room_rectangle, context.transform, gl);
 
-                circle_arc([0.0, 0.0, 1.0, 1.0], 0.5, 0.0, 2.0 * 3.1415, // FIXME: pi
+                // Why can't I use 2.0 instead of 1.9999? Who knows.
+                circle_arc([0.0, 0.0, 1.0, 1.0], 0.5, 0.0, 1.9999 * ::std::f64::consts::PI,
                            rect, context.transform, gl);
             });
         }
@@ -151,7 +152,7 @@ impl <'a, 'b> System<'a> for DrawSelectionBox<'b> {
             if mouse_input.dragging {
                 use graphics::{rectangle, line};
 
-                let rect = mouse_input.selection_rectangle_f64();
+                let rect = mouse_input.selection_rectangle();
 
                 rectangle([0.25, 1.0, 0.25, 0.01], rect, context.transform, gl);
                 for l in rectangle_to_lines(rect).iter() {

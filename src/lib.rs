@@ -50,6 +50,7 @@ extern crate ron;
 extern crate nalgebra;
 extern crate nphysics2d;
 extern crate ncollide;
+extern crate core;
 
 
 use opengl_graphics::{GlGraphics, OpenGL};
@@ -66,15 +67,16 @@ use specs::saveload::U64MarkerAllocator;
 
 mod draw;
 mod input;
+mod control;
 mod animate;
 mod physics;
 mod saveload;
 mod error;
 
 use error::{GameError, Error};
-use saveload::{SaveWorld, LoadWorld, DestroyEntity};
 use draw::run_draw_systems;
 use physics::PhysicsSystem;
+use input::{InputEvents, InputEvent, Motion};
 
 
 struct Game {
@@ -85,32 +87,28 @@ struct Game {
 
 #[derive(Debug, Default)]
 pub struct MouseInput {
-    pub mouse: (i32, i32),
-    pub dragging_source: (i32, i32),
+    pub mouse: (f64, f64),
+    pub dragging_source: (f64, f64),
     pub dragging: bool,
 }
 
 impl MouseInput {
-    pub fn selection_box(&self) -> [i32; 4] {
+    pub fn selection_box(&self) -> [f64; 4] {
         [self.dragging_source.0, self.dragging_source.1, self.mouse.0, self.mouse.1]
     }
 
     /// Return an array of type [i32; 4] with [x, y, width, height].
-    pub fn selection_rectangle(&self) -> [i32; 4] {
-        use std::cmp::{min, max};
+    pub fn selection_rectangle(&self) -> [f64; 4] {
+//        use f64::{min, max};
+//        use ::std::core::num::Float;
+//        use ::std::num::Float::{min, max};
 
-        let x1 = min(self.dragging_source.0, self.mouse.0);
-        let y1 = min(self.dragging_source.1, self.mouse.1);
-        let x2 = max(self.dragging_source.0, self.mouse.0);
-        let y2 = max(self.dragging_source.1, self.mouse.1);
+        let x1 = self.dragging_source.0.min(self.mouse.0);
+        let y1 = self.dragging_source.1.min(self.mouse.1);
+        let x2 = self.dragging_source.0.max(self.mouse.0);
+        let y2 = self.dragging_source.1.max(self.mouse.1);
 
         [x1, y1, x2 - x1, y2 - y1]
-    }
-
-    pub fn selection_rectangle_f64(&self) -> [f64; 4] {
-        let rect = self.selection_rectangle();
-
-        [rect[0] as f64, rect[1] as f64, rect[2] as f64, rect[3] as f64]
     }
 }
 
@@ -129,6 +127,12 @@ impl Game {
             update_delta_time.dt = args.dt;
         };
 
+        input::InputEventsToState.run_now(&mut self.specs_world.res);
+        input::PlayerControllerInput.run_now(&mut self.specs_world.res);
+        input::GlobalInput.run_now(&mut self.specs_world.res);
+
+        control::ControlObjects.run_now(&mut self.specs_world.res);
+
         self.physics_system.run_now(&mut self.specs_world.res);
         animate::UpdateAnimations.run_now(&mut self.specs_world.res);
 
@@ -139,8 +143,12 @@ impl Game {
     }
 
     fn press(&mut self, args: &Button) {
+        self.specs_world.write_resource::<InputEvents>().events
+            .push_back(InputEvent::PressEvent(*args));
+
         if let &Button::Mouse(MouseButton::Left) = args {
-            let mut mouse_input = self.specs_world.write_resource::<MouseInput>();
+            let mut mouse_input = self.specs_world
+                .write_resource::<MouseInput>();
 
             mouse_input.dragging = true;
             mouse_input.dragging_source = mouse_input.mouse;
@@ -153,18 +161,21 @@ impl Game {
     }
 
     fn release(&mut self, args: &Button) {
+        self.specs_world.write_resource::<InputEvents>().events
+            .push_back(InputEvent::ReleaseEvent(*args));
+
         if let &Button::Mouse(MouseButton::Left) = args {
             let rect = {
-                let mut mouse_input = self.specs_world.write_resource::<MouseInput>();
+                let mut mouse_input = self.specs_world
+                    .write_resource::<MouseInput>();
                 mouse_input.dragging = false;
                 mouse_input.selection_rectangle()
-                // Drop .write_resource()'s borrow so we can access .create_entity() later
             };
 
             let (x, y, width, height) = (rect[0], rect[1], rect[2], rect[3]);
 
             let entity = self.specs_world.create_entity()
-                .with(draw::Position { x, y})
+                .with(draw::Position { x, y })
                 .with(draw::Size { width, height })
                 .with(physics::Room)
                 .with(animate::Animation::<animate::RoomAnimation>::new(32))
@@ -172,22 +183,48 @@ impl Game {
                 .build();
 
             self.specs_world.create_entity()
-                .with(draw::Position { x: width / 2 + 5, y: height / 2 + 10 })
+                .with(draw::Position { x: width / 2.0 + 5.0, y: height / 2.0 + 10.0 })
+                .with(physics::Velocity::default())
                 .with(physics::InRoom { room_entity: entity.id() })
                 .marked::<U64Marker>()
                 .build();
 
             self.specs_world.create_entity()
-                .with(draw::Position { x: width / 2 - 5, y: height / 2 - 10 })
+                .with(draw::Position { x: width / 2.0 - 5.0, y: height / 2.0 - 10.0 })
+                .with(physics::Velocity::default())
                 .with(physics::InRoom { room_entity: entity.id() })
                 .marked::<U64Marker>()
                 .build();
+
+            if entity.id() == 0 {
+                self.specs_world.create_entity()
+                    .with(draw::Position { x: width / 2.0, y: 20.0 })
+                    .with(physics::Velocity::default())
+                    .with(physics::InRoom { room_entity: entity.id() })
+                    .with(input::PlayerController::default())
+                    .with(physics::Acceleration::default())
+                    .marked::<U64Marker>()
+                    .build();
+            }
         }
     }
 
     fn mouse_cursor(&mut self, x: f64, y: f64) {
-        let mut mouse_input = self.specs_world.write_resource::<MouseInput>();
-        mouse_input.mouse = (x as i32, y as i32);
+        let mut mouse_input = self.specs_world
+            .write_resource::<MouseInput>();
+        mouse_input.mouse = (x, y);
+
+        let motion = Motion {
+            position: (x, y),
+            dragging_from: if mouse_input.dragging {
+                Some(mouse_input.dragging_source)
+            } else {
+                None
+            }
+        };
+
+        self.specs_world.write_resource::<InputEvents>().events
+            .push_back(InputEvent::MotionEvent(motion));
     }
 }
 
@@ -219,9 +256,12 @@ pub fn run() -> Result<(), Error> {
     let mut world = World::new();
 
     world.register::<saveload::DestroyEntity>();
+    world.register::<input::PlayerController>();
     world.register::<draw::Position>();
     world.register::<draw::Size>();
     world.register::<animate::Animation<animate::RoomAnimation>>();
+    world.register::<physics::Velocity>();
+    world.register::<physics::Acceleration>();
     world.register::<physics::Room>();
     world.register::<physics::InRoom>();
     world.register::<U64Marker>();
@@ -229,6 +269,8 @@ pub fn run() -> Result<(), Error> {
     world.add_resource(U64MarkerAllocator::new());
     world.add_resource(MouseInput::default());
     world.add_resource(UpdateDeltaTime { dt: 0.0 });
+    world.add_resource(input::InputEvents::new());
+    world.add_resource(input::InputState::new());
 
     let mut game = Game {
         gl: GlGraphics::new(opengl_version),
@@ -236,7 +278,7 @@ pub fn run() -> Result<(), Error> {
         specs_world: world,
     };
 
-    LoadWorld { file_name: "storage.ron".into() }.run_now(&mut game.specs_world.res);
+    saveload::LoadWorld { file_name: "storage.ron".into() }.run_now(&mut game.specs_world.res);
 
     let mut events = Events::new(EventSettings::new());
 
@@ -262,7 +304,7 @@ pub fn run() -> Result<(), Error> {
         }
     }
 
-    SaveWorld { file_name: "storage.ron".into() }.run_now(&game.specs_world.res);
+    saveload::SaveWorld { file_name: "storage.ron".into() }.run_now(&game.specs_world.res);
 
 //    let state_file = std::fs::File::create("state.json")
 //        .context("Cannot create file to save game state")?;
