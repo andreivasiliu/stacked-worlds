@@ -2,7 +2,7 @@ extern crate specs;
 extern crate nphysics2d;
 extern crate ncollide;
 
-use specs::prelude::{WriteStorage, ReadStorage, VecStorage, System, Entities, Join};
+use specs::prelude::{WriteStorage, ReadStorage, VecStorage, DenseVecStorage, System, Entities, Join};
 use nphysics2d::world::World;
 use nalgebra::{Vector2, Translation2};
 use nphysics2d::object::RigidBody;
@@ -20,6 +20,8 @@ use nphysics2d::object::RigidBodyCollisionGroups;
 use specs::prelude::ReadExpect;
 use UpdateDeltaTime;
 use nphysics2d::detection::constraint::Constraint;
+use nphysics2d::object::WorldObject;
+use ncollide::world::CollisionObject;
 
 
 #[derive(Component, Debug, Serialize, Deserialize, Clone, Copy)]
@@ -48,6 +50,18 @@ pub struct Force {
 }
 
 #[derive(Component, Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[storage(DenseVecStorage)]
+pub struct Aim {
+    pub aiming: bool,
+    pub aiming_toward: (f64, f64),
+
+    #[serde(skip)]
+    pub aiming_at_entity: Option<Entity>,
+    #[serde(skip)]
+    pub aiming_at_point: Option<(f64, f64)>,
+}
+
+#[derive(Component, Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq)]
 #[storage(VecStorage)]
 pub struct CollisionSet {
     pub colliding: bool,
@@ -70,6 +84,23 @@ pub struct PhysicsSystem<N: Real = f64> {
 
     physical_objects: HashMap<Entity, PhysicalObject<N>>,
     physical_rooms: HashMap<Entity, PhysicalRoom<N>>,
+}
+
+trait GetEntity {
+    fn get_entity(&self) -> Option<Entity>;
+}
+
+impl<P: ncollide::math::Point, M> GetEntity for CollisionObject<P, M, WorldObject<f64>> {
+    fn get_entity(&self) -> Option<Entity> {
+        if let WorldObject::RigidBody(ref rigid_body) = self.data {
+            if let Some(entity_box) = rigid_body.borrow().user_data() {
+                if let Some(entity) = entity_box.downcast_ref::<Entity>() {
+                    return Some(*entity)
+                }
+            }
+        }
+        None
+    }
 }
 
 impl PhysicsSystem<f64> {
@@ -96,13 +127,14 @@ impl<'a> System<'a> for PhysicsSystem {
         WriteStorage<'a, Position>,
         WriteStorage<'a, Velocity>,
         ReadStorage<'a, Force>,
+        WriteStorage<'a, Aim>,
         //WriteStorage<'a, Angle>, // eventually...
         WriteStorage<'a, CollisionSet>,
         ReadStorage<'a, DestroyEntity>,
         ReadExpect<'a, UpdateDeltaTime>,
     );
 
-    fn run(&mut self, (entities, rooms, in_rooms, sizes, mut positions, mut velocities, forces, mut collision_sets, destroy_entities, delta_time): Self::SystemData) {
+    fn run(&mut self, (entities, rooms, in_rooms, sizes, mut positions, mut velocities, forces, mut aims, mut collision_sets, destroy_entities, delta_time): Self::SystemData) {
         for (entity, _room, size) in (&*entities, &rooms, &sizes).join() {
             let world = &mut self.world;
             let physical_rooms = &mut self.physical_rooms;
@@ -186,6 +218,39 @@ impl<'a> System<'a> for PhysicsSystem {
             let physical_velocity = rigid_body.lin_vel();
             velocity.x = physical_velocity.x;
             velocity.y = physical_velocity.y;
+        }
+
+        for (entity, position, mut aim) in (&*entities, &positions, &mut aims).join() {
+            use nalgebra::{self, Point2};
+            use ncollide::query::Ray;
+
+            let direction = Vector2::new(aim.aiming_toward.0, aim.aiming_toward.1).normalize();
+            // FIXME: Find the proper trait for direction.is_zero()
+            if direction == nalgebra::zero() {
+                continue;
+            }
+
+            if let Some(mut physical_object) = self.physical_objects.get(&entity) {
+                let rigid_body = physical_object.body.borrow();
+                let source = Point2::new(position.x, position.y);
+                let ray = Ray::new(source, direction);
+                let mut collision_groups = rigid_body.collision_groups().as_collision_groups();
+
+                for interference in self.world.collision_world().interferences_with_ray(&ray, collision_groups) {
+                    let (collision_object, ray_intersection) = interference;
+                    if let Some(intersected_entity) = collision_object.get_entity() {
+                        if entity != intersected_entity {
+                            let intersection_point = source + direction * ray_intersection.toi;
+
+                            // FIXME: there needs to be a system that resets these
+                            aim.aiming_at_point = Some((intersection_point.x, intersection_point.y));
+                            aim.aiming_at_entity = Some(intersected_entity);
+
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
         for (entity, force) in (&*entities, &forces).join() {

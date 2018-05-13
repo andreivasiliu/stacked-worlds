@@ -129,6 +129,7 @@ impl Game {
 
         input::InputEventsToState.run_now(&mut self.specs_world.res);
         input::PlayerControllerInput.run_now(&mut self.specs_world.res);
+        input::AimObjects.run_now(&mut self.specs_world.res);
         input::GlobalInput.run_now(&mut self.specs_world.res);
 
         control::ControlObjects.run_now(&mut self.specs_world.res);
@@ -136,6 +137,7 @@ impl Game {
         self.physics_system.run_now(&mut self.specs_world.res);
         animate::UpdateAnimations.run_now(&mut self.specs_world.res);
         control::UpdateCooldowns.run_now(&mut self.specs_world.res);
+        control::FireHook.run_now(&mut self.specs_world.res);
 
         // Must be left at the end in order to allow every other system to react on destroyed
         // entities.
@@ -205,6 +207,7 @@ impl Game {
                     .with(input::PlayerController::default())
                     .with(control::Jump::default())
                     .with(physics::Force::default())
+                    .with(physics::Aim::default())
                     .with(physics::CollisionSet::default())
                     .marked::<U64Marker>()
                     .build();
@@ -266,6 +269,7 @@ pub fn run() -> Result<(), Error> {
     world.register::<animate::Animation<animate::RoomAnimation>>();
     world.register::<physics::Velocity>();
     world.register::<physics::Force>();
+    world.register::<physics::Aim>();
     world.register::<physics::CollisionSet>();
     world.register::<physics::Room>();
     world.register::<physics::InRoom>();

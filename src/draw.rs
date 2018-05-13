@@ -10,6 +10,7 @@ use physics::InRoom;
 use physics::CollisionSet;
 use nalgebra::Vector2;
 use control::Jump;
+use physics::Aim;
 
 #[derive(Debug, Component, Serialize, Deserialize, Clone, Copy)]
 #[storage(VecStorage)]
@@ -118,9 +119,10 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
         ReadStorage<'a, InRoom>,
         ReadStorage<'a, CollisionSet>,
         ReadStorage<'a, Jump>,
+        ReadStorage<'a, Aim>,
     );
 
-    fn run(&mut self, (entities, positions, in_rooms, collision_sets, jumps): Self::SystemData) {
+    fn run(&mut self, (entities, positions, in_rooms, collision_sets, jumps, aims): Self::SystemData) {
         for (_entity, position, in_room) in (&*entities, &positions, &in_rooms).join() {
             let room_entity = entities.entity(in_room.room_entity);
 
@@ -142,7 +144,7 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
             });
         }
 
-        for (_entity, position, &in_room, collision_set) in (&*entities, &positions, &in_rooms, &collision_sets).join() {
+        for (_entity, position, in_room, collision_set) in (&*entities, &positions, &in_rooms, &collision_sets).join() {
             if collision_set.time_since_collision > 0.2 {
                 continue
             }
@@ -169,7 +171,7 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
             });
         }
 
-        for (_entity, position, &in_room, jump) in (&*entities, &positions, &in_rooms, &jumps).join() {
+        for (_entity, position, in_room, jump) in (&*entities, &positions, &in_rooms, &jumps).join() {
             if jump.cooldown <= 0.0 {
                 continue;
             }
@@ -191,6 +193,42 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
 
                 circle_arc([0.7, 0.7, 1.0, alpha as f32], 0.5, 0.0, 1.9999 * ::std::f64::consts::PI,
                            rect, context.transform, gl);
+            });
+        }
+
+        // Draw aiming reticule
+        for (_entity, position, in_room, aim) in (&*entities, &positions, &in_rooms, &aims).join() {
+            if !aim.aiming {
+                continue;
+            }
+
+            let room_entity = entities.entity(in_room.room_entity);
+
+            let room_position = match positions.get(room_entity) {
+                Some(room_position) => room_position,
+                None => continue,
+            };
+
+            let direction = Vector2::new(aim.aiming_toward.0, aim.aiming_toward.1).normalize();
+            let position = Vector2::new(position.x + room_position.x, position.y + room_position.y);
+
+            let p1 = position + direction * 4.0;
+            let p2 = position + direction * 8.0;
+
+            self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
+                use graphics::line;
+
+                line([1.0, 0.3, 0.3, 1.0], 0.5,
+                     [p1.x, p1.y, p2.x, p2.y], context.transform, gl);
+
+                if let Some(aiming_at_point) = aim.aiming_at_point {
+                    let p3 = position + direction * 15.0;
+                    let p4 = Vector2::new(aiming_at_point.0 + room_position.x,
+                                          aiming_at_point.1 + room_position.y);
+
+                    line([0.5, 0.0, 0.0, 0.1], 0.5,
+                         [p3.x, p3.y, p4.x, p4.y], context.transform, gl);
+                }
             });
         }
     }

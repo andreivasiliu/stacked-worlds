@@ -15,6 +15,7 @@ use physics::Force;
 use physics::Velocity;
 use physics::CollisionSet;
 use control::Jump;
+use physics::Aim;
 
 pub struct SaveWorld {
     pub file_name: String,
@@ -30,6 +31,7 @@ impl <'a> System<'a> for SaveWorld {
         ReadStorage<'a, PlayerController>,
         ReadStorage<'a, Velocity>,
         ReadStorage<'a, Force>,
+        ReadStorage<'a, Aim>,
         ReadStorage<'a, CollisionSet>,
         ReadStorage<'a, Jump>,
         ReadStorage<'a, Animation<RoomAnimation>>,
@@ -37,12 +39,12 @@ impl <'a> System<'a> for SaveWorld {
     );
 
     fn run(&mut self, (entities, positions, sizes, rooms, in_rooms, player_controllers,
-        velocities, forces, collision_sets, jumps, animations, markers): Self::SystemData)
+        velocities, forces, aims, collision_sets, jumps, animations, markers): Self::SystemData)
     {
         let mut serializer = ron::ser::Serializer::new(Some(Default::default()), true);
         SerializeComponents::<Error, U64Marker>::serialize(
             &(&positions, &sizes, &rooms, &in_rooms, &player_controllers, &velocities,
-              &forces, &collision_sets, &jumps, &animations),
+              &forces, &aims, &collision_sets, &jumps, &animations),
             &entities,
             &markers,
             &mut serializer
@@ -78,6 +80,7 @@ impl <'a> System<'a> for LoadWorld {
         WriteStorage<'a, PlayerController>,
         WriteStorage<'a, Velocity>,
         WriteStorage<'a, Force>,
+        WriteStorage<'a, Aim>,
         WriteStorage<'a, CollisionSet>,
         WriteStorage<'a, Jump>,
         WriteStorage<'a, Animation<RoomAnimation>>,
@@ -85,7 +88,7 @@ impl <'a> System<'a> for LoadWorld {
     );
 
     fn run(&mut self, (entities, mut allocator, positions, sizes, rooms, in_rooms, player_controllers,
-        velocities, forces, collision_sets, jumps, animations, mut markers)
+        velocities, forces, aims, collision_sets, jumps, animations, mut markers)
     : Self::SystemData) {
         use ::std::fs::File;
         use ::std::io::Read;
@@ -104,7 +107,7 @@ impl <'a> System<'a> for LoadWorld {
 
         DeserializeComponents::<Error, _>::deserialize(
             &mut (positions, sizes, rooms, in_rooms, player_controllers, velocities,
-                  forces, collision_sets, jumps, animations),
+                  forces, aims, collision_sets, jumps, animations),
             &entities,
             &mut markers,
             &mut allocator,

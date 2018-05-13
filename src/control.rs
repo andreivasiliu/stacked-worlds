@@ -4,6 +4,8 @@ use nalgebra::Vector2;
 use input::{PlayerController, Movement};
 use physics::{Force, CollisionSet};
 use UpdateDeltaTime;
+use draw::Position;
+use physics::Aim;
 
 #[derive(Component, Debug, Default, Serialize, Deserialize, Copy, Clone, PartialEq)]
 #[storage(VecStorage)]
@@ -52,6 +54,42 @@ impl <'a> System<'a> for ControlObjects {
                 force.y += jump_force.y;
 
                 jump.cooldown += 0.2;
+            }
+        }
+    }
+}
+
+pub struct FireHook;
+
+impl <'a> System<'a> for FireHook {
+    type SystemData = (
+        Entities<'a>,
+        WriteStorage<'a, PlayerController>,
+        ReadStorage<'a, Position>,
+        ReadStorage<'a, Aim>,
+    );
+
+    fn run(&mut self, (entities, mut player_controllers, positions, aims): Self::SystemData) {
+        for (_entity, mut player_controller, position, aim) in (&*entities, &mut player_controllers, &positions, &aims).join() {
+            if player_controller.hooking && !player_controller.hook_established {
+                // Create grappling hook chain if possible
+                let source = Vector2::new(position.x, position.y);
+                let target = if let Some(point) = aim.aiming_at_point {
+                    Vector2::new(point.0, point.1)
+                } else {
+                    continue
+                };
+
+                let chain_vector = target - source;
+                let _direction = chain_vector.normalize();
+                let link_count = (chain_vector / 10.0).norm().floor();
+                let link_vector = chain_vector / link_count;
+
+                println!("Count: {}, vector: {:?}", link_count, link_vector);
+                player_controller.hook_established = true;
+            } else if !player_controller.hooking && player_controller.hook_established {
+                // Destroy grappling hook chain
+                player_controller.hook_established = false;
             }
         }
     }

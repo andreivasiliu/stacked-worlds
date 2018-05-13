@@ -1,8 +1,11 @@
-use specs::prelude::{System, DenseVecStorage, WriteStorage, WriteExpect, Entities, Join};
+use specs::prelude::{System, DenseVecStorage, WriteStorage, ReadStorage, WriteExpect, Entities, Join};
 use std::collections::VecDeque;
-use super::{Button, Key};
+use super::{Button, Key, MouseButton};
 use std::collections::HashSet;
 use std::collections::HashMap;
+use physics::Aim;
+use draw::Position;
+use physics::InRoom;
 
 pub enum InputEvent {
     PressEvent(Button),
@@ -71,6 +74,8 @@ impl Default for Movement {
 pub struct PlayerController {
     pub moving: Movement,
     pub jumping: bool,
+    pub hooking: bool,
+    pub hook_established: bool,
 }
 
 pub struct InputEventsToState;
@@ -124,8 +129,44 @@ impl <'a> System<'a> for PlayerControllerInput {
                 (false, false) => Movement::None,
             };
 
+            let hooking = input_state.button_pressed_or_held(&Button::Mouse(MouseButton::Right));
+
             player_controller.moving = movement;
             player_controller.jumping = jumping;
+            player_controller.hooking = hooking;
+        }
+    }
+}
+
+pub struct AimObjects;
+
+impl <'a> System<'a> for AimObjects {
+    type SystemData = (
+        Entities<'a>,
+        WriteExpect<'a, InputState>,
+        ReadStorage<'a, Position>,
+        ReadStorage<'a, InRoom>,
+        WriteStorage<'a, Aim>,
+    );
+
+    fn run(&mut self, (entities, mut input_state, positions, in_rooms, mut aims): Self::SystemData) {
+        for (_entity, position, in_room, mut aim) in (&*entities, &positions, &in_rooms, &mut aims).join() {
+            if input_state.button_pressed_or_held(&Button::Keyboard(Key::LCtrl)) {
+                let room_entity = entities.entity(in_room.room_entity);
+
+                let room_position = match positions.get(room_entity) {
+                    Some(room_position) => room_position,
+                    None => continue,
+                };
+
+                let source = (position.x + room_position.x, position.y + room_position.y);
+                let aim_at = input_state.mouse.position;
+
+                aim.aiming = true;
+                aim.aiming_toward = (aim_at.0 - source.0, aim_at.1 - source.1);
+            } else {
+                aim.aiming = false;
+            }
         }
     }
 }
