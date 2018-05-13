@@ -19,6 +19,7 @@ use ncollide::shape::Plane;
 use nphysics2d::object::RigidBodyCollisionGroups;
 use specs::prelude::ReadExpect;
 use UpdateDeltaTime;
+use nphysics2d::detection::constraint::Constraint;
 
 
 #[derive(Component, Debug, Serialize, Deserialize, Clone, Copy)]
@@ -41,9 +42,18 @@ pub struct Velocity {
 
 #[derive(Component, Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq)]
 #[storage(VecStorage)]
-pub struct Acceleration {
+pub struct Force {
     pub x: f64,
     pub y: f64,
+}
+
+#[derive(Component, Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[storage(VecStorage)]
+pub struct CollisionSet {
+    pub colliding: bool,
+    pub collision_normal: (f64, f64),
+    pub last_collision_normal: (f64, f64),
+    pub time_since_collision: f64,
 }
 
 struct PhysicalObject<N: Real> {
@@ -57,6 +67,7 @@ struct PhysicalRoom<N: Real> {
 
 pub struct PhysicsSystem<N: Real = f64> {
     world: World<N>,
+
     physical_objects: HashMap<Entity, PhysicalObject<N>>,
     physical_rooms: HashMap<Entity, PhysicalRoom<N>>,
 }
@@ -65,7 +76,7 @@ impl PhysicsSystem<f64> {
     pub fn new() -> Self {
         let mut world = World::new();
 
-        world.set_gravity(Vector2::new(0.0, 10.0 * 9.81));
+        world.set_gravity(Vector2::new(0.0, 500.0));
 
         PhysicsSystem {
             world,
@@ -84,13 +95,14 @@ impl<'a> System<'a> for PhysicsSystem {
         //ReadStorage<'a, Shape>, // eventually...
         WriteStorage<'a, Position>,
         WriteStorage<'a, Velocity>,
-        ReadStorage<'a, Acceleration>,
+        ReadStorage<'a, Force>,
         //WriteStorage<'a, Angle>, // eventually...
+        WriteStorage<'a, CollisionSet>,
         ReadStorage<'a, DestroyEntity>,
         ReadExpect<'a, UpdateDeltaTime>,
     );
 
-    fn run(&mut self, (entities, rooms, in_rooms, sizes, mut positions, mut velocities, accelerations, destroy_entities, delta_time): Self::SystemData) {
+    fn run(&mut self, (entities, rooms, in_rooms, sizes, mut positions, mut velocities, forces, mut collision_sets, destroy_entities, delta_time): Self::SystemData) {
         for (entity, _room, size) in (&*entities, &rooms, &sizes).join() {
             let world = &mut self.world;
             let physical_rooms = &mut self.physical_rooms;
@@ -116,20 +128,23 @@ impl<'a> System<'a> for PhysicsSystem {
                     collision_groups.set_membership(&[collision_group]);
                     collision_groups.set_whitelist(&[collision_group]);
 
-                    south_wall.set_collision_groups(collision_groups);
-                    north_wall.set_collision_groups(collision_groups);
-                    west_wall.set_collision_groups(collision_groups);
-                    east_wall.set_collision_groups(collision_groups);
+
+                    for wall in [&mut south_wall, &mut north_wall, &mut west_wall, &mut east_wall].iter_mut() {
+                        wall.set_collision_groups(collision_groups);
+                        wall.set_user_data(Some(Box::new(entity)));
+                    }
 
                     let south_wall = world.add_rigid_body(south_wall);
                     let north_wall = world.add_rigid_body(north_wall);
                     let west_wall = world.add_rigid_body(west_wall);
                     let east_wall = world.add_rigid_body(east_wall);
 
+                    let walls = [south_wall, north_wall, west_wall, east_wall];
+
                     println!("Created room {:?}, group {}", entity, collision_group);
 
                     PhysicalRoom {
-                        walls: [south_wall, north_wall, west_wall, east_wall],
+                        walls
                     }
                 });
         }
@@ -140,7 +155,7 @@ impl<'a> System<'a> for PhysicsSystem {
 
             let physical_object = physical_objects.entry(entity)
                 .or_insert_with(|| {
-                    let mut body = RigidBody::new_dynamic(Ball::new(10.0), 1.0, 0.5, 0.5);
+                    let mut body = RigidBody::new_dynamic(Ball::new(10.0), 1.0, 0.3, 0.5);
 
                     let collision_group = in_room.room_entity as usize; // FIXME: :(
                     let mut collision_groups = RigidBodyCollisionGroups::new_dynamic();
@@ -150,6 +165,8 @@ impl<'a> System<'a> for PhysicsSystem {
 
                     body.set_translation(Translation2::new(position.x, position.y));
                     body.set_lin_vel(Vector2::new(velocity.x, velocity.y));
+
+                    body.set_user_data(Some(Box::new(entity)));
 
                     let body = world.add_rigid_body(body);
 
@@ -171,12 +188,12 @@ impl<'a> System<'a> for PhysicsSystem {
             velocity.y = physical_velocity.y;
         }
 
-        for (entity, acceleration) in (&*entities, &accelerations).join() {
+        for (entity, force) in (&*entities, &forces).join() {
             if let Some(mut physical_object) = self.physical_objects.get(&entity) {
-                let acceleration = Vector2::new(acceleration.x, acceleration.y);
+                let force = Vector2::new(force.x, force.y);
                 let mut rigid_body = physical_object.body.borrow_mut();
                 rigid_body.clear_forces();
-                rigid_body.append_lin_force(acceleration);
+                rigid_body.append_lin_force(force);
             }
         }
 
@@ -197,7 +214,51 @@ impl<'a> System<'a> for PhysicsSystem {
             // FIXME: destroy objects in the room too
         }
 
+        // Let time flow in the physics world
         self.world.step(delta_time.dt);
+
+        // Collect collisions that happened during the above step
+        let mut constraints = Vec::with_capacity(16);
+        self.world.constraints(&mut constraints);
+
+        for (_entity, mut collision_set) in (&*entities, &mut collision_sets).join() {
+            collision_set.colliding = false;
+            collision_set.collision_normal = (0.0, 0.0);
+        }
+
+        for constraint in constraints {
+            if let Constraint::RBRB(rigid_body1, rigid_body2, mut contact_point) = constraint {
+                let (rigid_body1, rigid_body2) = (rigid_body1.borrow(), rigid_body2.borrow());
+                let (user_data1, user_data2) = (rigid_body1.user_data(), rigid_body2.user_data());
+
+                if let (Some(box1), Some(box2)) = (user_data1, user_data2) {
+                    if let (Some(entity1), Some(entity2)) = (box1.downcast_ref::<Entity>(), box2.downcast_ref::<Entity>()) {
+                        if let Some(mut collision_set) = collision_sets.get_mut(*entity1) {
+                            collision_set.colliding = true;
+                            let (x, y) = collision_set.collision_normal;
+                            collision_set.collision_normal = (x + contact_point.normal.x, y + contact_point.normal.y);
+                        }
+                        if let Some(mut collision_set) = collision_sets.get_mut(*entity2) {
+                            collision_set.colliding = true;
+                            contact_point.flip();
+                            let (x, y) = collision_set.collision_normal;
+                            collision_set.collision_normal = (x + contact_point.normal.x, y + contact_point.normal.y);
+                        }
+                    }
+                } else {
+                    println!("Collision with unregistered body.");
+                }
+            }
+        }
+
+        for (_entity, mut collision_set) in (&*entities, &mut collision_sets).join() {
+            if collision_set.colliding {
+                collision_set.last_collision_normal = collision_set.collision_normal;
+                collision_set.time_since_collision = 0.0;
+            } else {
+                collision_set.time_since_collision += delta_time.dt;
+            }
+        }
     }
 }
 

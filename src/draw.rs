@@ -7,6 +7,9 @@ use opengl_graphics::GlGraphics;
 use MouseInput;
 use animate::{Animation, RoomAnimation};
 use physics::InRoom;
+use physics::CollisionSet;
+use nalgebra::Vector2;
+use control::Jump;
 
 #[derive(Debug, Component, Serialize, Deserialize, Clone, Copy)]
 #[storage(VecStorage)]
@@ -113,9 +116,11 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
         Entities<'a>,
         ReadStorage<'a, Position>,
         ReadStorage<'a, InRoom>,
+        ReadStorage<'a, CollisionSet>,
+        ReadStorage<'a, Jump>,
     );
 
-    fn run(&mut self, (entities, positions, in_rooms): Self::SystemData) {
+    fn run(&mut self, (entities, positions, in_rooms, collision_sets, jumps): Self::SystemData) {
         for (_entity, position, in_room) in (&*entities, &positions, &in_rooms).join() {
             let room_entity = entities.entity(in_room.room_entity);
 
@@ -132,7 +137,59 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
 //                rectangle([0.2, 0.2, 0.5, 0.01], room_rectangle, context.transform, gl);
 
                 // Why can't I use 2.0 instead of 1.9999? Who knows.
-                circle_arc([0.0, 0.0, 1.0, 1.0], 0.5, 0.0, 1.9999 * ::std::f64::consts::PI,
+                circle_arc([0.3, 0.3, 1.0, 1.0], 0.5, 0.0, 1.9999 * ::std::f64::consts::PI,
+                           rect, context.transform, gl);
+            });
+        }
+
+        for (_entity, position, &in_room, collision_set) in (&*entities, &positions, &in_rooms, &collision_sets).join() {
+            if collision_set.time_since_collision > 0.2 {
+                continue
+            }
+
+            let room_entity = entities.entity(in_room.room_entity);
+
+            let room_position = match positions.get(room_entity) {
+                Some(room_position) => room_position,
+                None => continue,
+            };
+
+            let normal = Vector2::new(collision_set.last_collision_normal.0,
+                                      collision_set.last_collision_normal.1).normalize();
+
+            let (x1, y1) = (position.x + room_position.x, position.y + room_position.y);
+            let (x2, y2) = (x1 + normal.x * 10.0, y1 + normal.y * 10.0);
+
+            let alpha = (0.2 - collision_set.time_since_collision) / 0.2;
+
+            self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
+                use graphics::line;
+
+                line([0.0, 1.0, 0.0, alpha as f32], 0.5, [x1, y1, x2, y2], context.transform, gl);
+            });
+        }
+
+        for (_entity, position, &in_room, jump) in (&*entities, &positions, &in_rooms, &jumps).join() {
+            if jump.cooldown <= 0.0 {
+                continue;
+            }
+
+            let room_entity = entities.entity(in_room.room_entity);
+
+            let room_position = match positions.get(room_entity) {
+                Some(room_position) => room_position,
+                None => continue,
+            };
+
+            self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
+                use graphics::{Transformed, circle_arc};
+
+                let rect = [position.x - 7.0, position.y - 7.0, 14.0, 14.0];
+                let context = context.trans(room_position.x, room_position.y);
+
+                let alpha = jump.cooldown / 0.2;
+
+                circle_arc([0.7, 0.7, 1.0, alpha as f32], 0.5, 0.0, 1.9999 * ::std::f64::consts::PI,
                            rect, context.transform, gl);
             });
         }

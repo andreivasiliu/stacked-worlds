@@ -135,6 +135,7 @@ impl Game {
 
         self.physics_system.run_now(&mut self.specs_world.res);
         animate::UpdateAnimations.run_now(&mut self.specs_world.res);
+        control::UpdateCooldowns.run_now(&mut self.specs_world.res);
 
         // Must be left at the end in order to allow every other system to react on destroyed
         // entities.
@@ -202,7 +203,9 @@ impl Game {
                     .with(physics::Velocity::default())
                     .with(physics::InRoom { room_entity: entity.id() })
                     .with(input::PlayerController::default())
-                    .with(physics::Acceleration::default())
+                    .with(control::Jump::default())
+                    .with(physics::Force::default())
+                    .with(physics::CollisionSet::default())
                     .marked::<U64Marker>()
                     .build();
             }
@@ -257,11 +260,13 @@ pub fn run() -> Result<(), Error> {
 
     world.register::<saveload::DestroyEntity>();
     world.register::<input::PlayerController>();
+    world.register::<control::Jump>();
     world.register::<draw::Position>();
     world.register::<draw::Size>();
     world.register::<animate::Animation<animate::RoomAnimation>>();
     world.register::<physics::Velocity>();
-    world.register::<physics::Acceleration>();
+    world.register::<physics::Force>();
+    world.register::<physics::CollisionSet>();
     world.register::<physics::Room>();
     world.register::<physics::InRoom>();
     world.register::<U64Marker>();
