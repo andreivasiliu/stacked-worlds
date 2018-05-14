@@ -28,13 +28,13 @@ pub struct Size {
 
 #[derive(Component, Debug, Serialize, Deserialize, Clone, Copy)]
 #[storage(VecStorage)]
-pub struct Room;
+pub struct Shape {
+    pub size: f64,
+}
 
-//#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
-//pub struct Animator {
-//    current: u32,
-//    limit: u32,
-//}
+#[derive(Component, Debug, Serialize, Deserialize, Clone, Copy)]
+#[storage(VecStorage)]
+pub struct Room;
 
 fn rectangle_to_lines(rect: [f64; 4]) -> [[f64; 4]; 4] {
     let x1 = rect[0];
@@ -116,14 +116,15 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
     type SystemData = (
         Entities<'a>,
         ReadStorage<'a, Position>,
+        ReadStorage<'a, Shape>,
         ReadStorage<'a, InRoom>,
         ReadStorage<'a, CollisionSet>,
         ReadStorage<'a, Jump>,
         ReadStorage<'a, Aim>,
     );
 
-    fn run(&mut self, (entities, positions, in_rooms, collision_sets, jumps, aims): Self::SystemData) {
-        for (_entity, position, in_room) in (&*entities, &positions, &in_rooms).join() {
+    fn run(&mut self, (entities, positions, shapes, in_rooms, collision_sets, jumps, aims): Self::SystemData) {
+        for (_entity, position, shape, in_room) in (&*entities, &positions, &shapes, &in_rooms).join() {
             let room_entity = entities.entity(in_room.room_entity);
 
             let room_position = match positions.get(room_entity) {
@@ -131,10 +132,12 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
                 None => continue,
             };
 
+            let size = shape.size;
+
             self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
                 use graphics::{Transformed, circle_arc};
 
-                let rect = [position.x - 10.0, position.y - 10.0, 20.0, 20.0];
+                let rect = [position.x - size, position.y - size, size * 2.0, size * 2.0];
                 let context = context.trans(room_position.x, room_position.y);
 //                rectangle([0.2, 0.2, 0.5, 0.01], room_rectangle, context.transform, gl);
 

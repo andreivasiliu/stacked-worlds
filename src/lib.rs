@@ -187,6 +187,7 @@ impl Game {
 
             self.specs_world.create_entity()
                 .with(draw::Position { x: width / 2.0 + 5.0, y: height / 2.0 + 10.0 })
+                .with(draw::Shape { size: 10.0 })
                 .with(physics::Velocity::default())
                 .with(physics::InRoom { room_entity: entity.id() })
                 .marked::<U64Marker>()
@@ -194,6 +195,7 @@ impl Game {
 
             self.specs_world.create_entity()
                 .with(draw::Position { x: width / 2.0 - 5.0, y: height / 2.0 - 10.0 })
+                .with(draw::Shape { size: 10.0 })
                 .with(physics::Velocity::default())
                 .with(physics::InRoom { room_entity: entity.id() })
                 .marked::<U64Marker>()
@@ -202,6 +204,7 @@ impl Game {
             if entity.id() == 0 {
                 self.specs_world.create_entity()
                     .with(draw::Position { x: width / 2.0, y: 20.0 })
+                    .with(draw::Shape { size: 10.0 })
                     .with(physics::Velocity::default())
                     .with(physics::InRoom { room_entity: entity.id() })
                     .with(input::PlayerController::default())
@@ -266,11 +269,13 @@ pub fn run() -> Result<(), Error> {
     world.register::<control::Jump>();
     world.register::<draw::Position>();
     world.register::<draw::Size>();
+    world.register::<draw::Shape>();
     world.register::<animate::Animation<animate::RoomAnimation>>();
     world.register::<physics::Velocity>();
     world.register::<physics::Force>();
     world.register::<physics::Aim>();
     world.register::<physics::CollisionSet>();
+    world.register::<physics::RevoluteJoint>();
     world.register::<physics::Room>();
     world.register::<physics::InRoom>();
     world.register::<U64Marker>();

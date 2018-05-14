@@ -6,16 +6,11 @@ use specs::prelude::{System, Entities, ReadStorage, Join, Write, WriteStorage};
 use specs::storage::NullStorage;
 
 use error::Error;
-use draw::{Position, Size};
+use draw::{Position, Size, Shape};
 use animate::{Animation, RoomAnimation};
-use physics::Room;
-use physics::InRoom;
+use physics::{Room, InRoom, Force, Velocity, CollisionSet, RevoluteJoint, Aim};
 use input::PlayerController;
-use physics::Force;
-use physics::Velocity;
-use physics::CollisionSet;
 use control::Jump;
-use physics::Aim;
 
 pub struct SaveWorld {
     pub file_name: String,
@@ -26,6 +21,7 @@ impl <'a> System<'a> for SaveWorld {
         Entities<'a>,
         ReadStorage<'a, Position>,
         ReadStorage<'a, Size>,
+        ReadStorage<'a, Shape>,
         ReadStorage<'a, Room>,
         ReadStorage<'a, InRoom>,
         ReadStorage<'a, PlayerController>,
@@ -33,18 +29,20 @@ impl <'a> System<'a> for SaveWorld {
         ReadStorage<'a, Force>,
         ReadStorage<'a, Aim>,
         ReadStorage<'a, CollisionSet>,
+        ReadStorage<'a, RevoluteJoint>,
         ReadStorage<'a, Jump>,
         ReadStorage<'a, Animation<RoomAnimation>>,
         ReadStorage<'a, U64Marker>,
     );
 
-    fn run(&mut self, (entities, positions, sizes, rooms, in_rooms, player_controllers,
-        velocities, forces, aims, collision_sets, jumps, animations, markers): Self::SystemData)
+    fn run(&mut self, (entities, positions, sizes, shapes, rooms, in_rooms,
+        player_controllers, velocities, forces, aims, collision_sets,
+        revolute_joints, jumps, animations, markers): Self::SystemData)
     {
         let mut serializer = ron::ser::Serializer::new(Some(Default::default()), true);
         SerializeComponents::<Error, U64Marker>::serialize(
-            &(&positions, &sizes, &rooms, &in_rooms, &player_controllers, &velocities,
-              &forces, &aims, &collision_sets, &jumps, &animations),
+            &(&positions, &sizes, shapes, &rooms, &in_rooms, &player_controllers, &velocities,
+              &forces, &aims, &collision_sets, &revolute_joints, &jumps, &animations),
             &entities,
             &markers,
             &mut serializer
@@ -75,6 +73,7 @@ impl <'a> System<'a> for LoadWorld {
         Write<'a, U64MarkerAllocator>,
         WriteStorage<'a, Position>,
         WriteStorage<'a, Size>,
+        WriteStorage<'a, Shape>,
         WriteStorage<'a, Room>,
         WriteStorage<'a, InRoom>,
         WriteStorage<'a, PlayerController>,
@@ -82,13 +81,14 @@ impl <'a> System<'a> for LoadWorld {
         WriteStorage<'a, Force>,
         WriteStorage<'a, Aim>,
         WriteStorage<'a, CollisionSet>,
+        WriteStorage<'a, RevoluteJoint>,
         WriteStorage<'a, Jump>,
         WriteStorage<'a, Animation<RoomAnimation>>,
         WriteStorage<'a, U64Marker>,
     );
 
-    fn run(&mut self, (entities, mut allocator, positions, sizes, rooms, in_rooms, player_controllers,
-        velocities, forces, aims, collision_sets, jumps, animations, mut markers)
+    fn run(&mut self, (entities, mut allocator, positions, sizes, shapes, rooms, in_rooms, player_controllers,
+        velocities, forces, aims, collision_sets, revolute_joints, jumps, animations, mut markers)
     : Self::SystemData) {
         use ::std::fs::File;
         use ::std::io::Read;
@@ -106,8 +106,8 @@ impl <'a> System<'a> for LoadWorld {
             .expect("Could not load"); // FIXME: handle error
 
         DeserializeComponents::<Error, _>::deserialize(
-            &mut (positions, sizes, rooms, in_rooms, player_controllers, velocities,
-                  forces, aims, collision_sets, jumps, animations),
+            &mut (positions, sizes, shapes, rooms, in_rooms, player_controllers, velocities,
+                  forces, aims, collision_sets, revolute_joints, jumps, animations),
             &entities,
             &mut markers,
             &mut allocator,

@@ -70,6 +70,12 @@ pub struct CollisionSet {
     pub time_since_collision: f64,
 }
 
+#[derive(Component, Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[storage(DenseVecStorage)]
+pub struct RevoluteJoint {
+    pub linked_to_entity: Index,
+}
+
 struct PhysicalObject<N: Real> {
     body: RigidBodyHandle<N>,
 }
@@ -235,6 +241,11 @@ impl<'a> System<'a> for PhysicsSystem {
                 let source = Point2::new(position.x, position.y);
                 let ray = Ray::new(source, direction);
                 let mut collision_groups = rigid_body.collision_groups().as_collision_groups();
+                use std::f64::INFINITY;
+
+                aim.aiming_at_point = None;
+                aim.aiming_at_entity = None;
+                let mut smallest_time_of_impact = INFINITY;
 
                 for interference in self.world.collision_world().interferences_with_ray(&ray, collision_groups) {
                     let (collision_object, ray_intersection) = interference;
@@ -242,11 +253,12 @@ impl<'a> System<'a> for PhysicsSystem {
                         if entity != intersected_entity {
                             let intersection_point = source + direction * ray_intersection.toi;
 
-                            // FIXME: there needs to be a system that resets these
-                            aim.aiming_at_point = Some((intersection_point.x, intersection_point.y));
-                            aim.aiming_at_entity = Some(intersected_entity);
+                            if smallest_time_of_impact > ray_intersection.toi {
+                                smallest_time_of_impact = ray_intersection.toi;
 
-                            break;
+                                aim.aiming_at_point = Some((intersection_point.x, intersection_point.y));
+                                aim.aiming_at_entity = Some(intersected_entity);
+                            }
                         }
                     }
                 }

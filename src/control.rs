@@ -1,11 +1,11 @@
 use specs::prelude::{System, VecStorage, Entities, ReadExpect, ReadStorage, WriteStorage, Join};
 use nalgebra::Vector2;
 
-use input::{PlayerController, Movement};
-use physics::{Force, CollisionSet};
 use UpdateDeltaTime;
-use draw::Position;
-use physics::Aim;
+use input::{PlayerController, Movement};
+use physics::{Velocity, Force, Aim, CollisionSet, InRoom};
+use draw::{Position, Shape};
+use specs::LazyUpdate;
 
 #[derive(Component, Debug, Default, Serialize, Deserialize, Copy, Clone, PartialEq)]
 #[storage(VecStorage)]
@@ -66,11 +66,13 @@ impl <'a> System<'a> for FireHook {
         Entities<'a>,
         WriteStorage<'a, PlayerController>,
         ReadStorage<'a, Position>,
+        ReadStorage<'a, InRoom>,
         ReadStorage<'a, Aim>,
+        ReadExpect<'a, LazyUpdate>,
     );
 
-    fn run(&mut self, (entities, mut player_controllers, positions, aims): Self::SystemData) {
-        for (_entity, mut player_controller, position, aim) in (&*entities, &mut player_controllers, &positions, &aims).join() {
+    fn run(&mut self, (entities, mut player_controllers, positions, in_rooms, aims, lazy_update): Self::SystemData) {
+        for (_entity, mut player_controller, position, in_room, aim) in (&*entities, &mut player_controllers, &positions, &in_rooms, &aims).join() {
             if player_controller.hooking && !player_controller.hook_established {
                 // Create grappling hook chain if possible
                 let source = Vector2::new(position.x, position.y);
@@ -81,11 +83,21 @@ impl <'a> System<'a> for FireHook {
                 };
 
                 let chain_vector = target - source;
-                let _direction = chain_vector.normalize();
+                let direction = chain_vector.normalize();
                 let link_count = (chain_vector / 10.0).norm().floor();
-                let link_vector = chain_vector / link_count;
 
-                println!("Count: {}, vector: {:?}", link_count, link_vector);
+                for i in 2..link_count as i32 {
+                    let chain_link_position = source + direction * (i as f64);
+
+                    lazy_update.create_entity(&entities)
+                        .with(Position { x: chain_link_position.x, y: chain_link_position.y })
+                        .with(Shape { size: 3.0 })
+                        .with(Velocity::default())
+                        .with(InRoom { .. *in_room })
+                        .build();
+                }
+
+                println!("Count: {}, direction: {:?}", link_count, direction);
                 player_controller.hook_established = true;
             } else if !player_controller.hooking && player_controller.hook_established {
                 // Destroy grappling hook chain
