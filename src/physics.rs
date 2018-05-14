@@ -12,9 +12,8 @@ use std::collections::HashMap;
 use nphysics2d::object::RigidBodyHandle;
 use nalgebra::Real;
 use specs::world::Index;
-use draw::Position;
+use draw::{Position, Size, Shape};
 use specs::prelude::Entity;
-use draw::Size;
 use ncollide::shape::Plane;
 use nphysics2d::object::RigidBodyCollisionGroups;
 use specs::prelude::ReadExpect;
@@ -22,6 +21,9 @@ use UpdateDeltaTime;
 use nphysics2d::detection::constraint::Constraint;
 use nphysics2d::object::WorldObject;
 use ncollide::world::CollisionObject;
+use nphysics2d::detection::joint::BallInSocket;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 
 #[derive(Component, Debug, Serialize, Deserialize, Clone, Copy)]
@@ -85,13 +87,6 @@ struct PhysicalRoom<N: Real> {
     walls: [RigidBodyHandle<N>; 4],
 }
 
-pub struct PhysicsSystem<N: Real = f64> {
-    world: World<N>,
-
-    physical_objects: HashMap<Entity, PhysicalObject<N>>,
-    physical_rooms: HashMap<Entity, PhysicalRoom<N>>,
-}
-
 trait GetEntity {
     fn get_entity(&self) -> Option<Entity>;
 }
@@ -109,6 +104,16 @@ impl<P: ncollide::math::Point, M> GetEntity for CollisionObject<P, M, WorldObjec
     }
 }
 
+type RevoluteJointHandle<N> = Rc<RefCell<BallInSocket<N>>>;
+
+pub struct PhysicsSystem<N: Real = f64> {
+    world: World<N>,
+
+    physical_objects: HashMap<Entity, PhysicalObject<N>>,
+    physical_rooms: HashMap<Entity, PhysicalRoom<N>>,
+    physical_revolute_joints: HashMap<Entity, RevoluteJointHandle<N>>
+}
+
 impl PhysicsSystem<f64> {
     pub fn new() -> Self {
         let mut world = World::new();
@@ -119,6 +124,7 @@ impl PhysicsSystem<f64> {
             world,
             physical_objects: HashMap::new(),
             physical_rooms: HashMap::new(),
+            physical_revolute_joints: HashMap::new(),
         }
     }
 }
@@ -129,18 +135,20 @@ impl<'a> System<'a> for PhysicsSystem {
         ReadStorage<'a, Room>,
         ReadStorage<'a, InRoom>,
         ReadStorage<'a, Size>,
-        //ReadStorage<'a, Shape>, // eventually...
+        ReadStorage<'a, Shape>,
         WriteStorage<'a, Position>,
         WriteStorage<'a, Velocity>,
         ReadStorage<'a, Force>,
         WriteStorage<'a, Aim>,
         //WriteStorage<'a, Angle>, // eventually...
         WriteStorage<'a, CollisionSet>,
+        ReadStorage<'a, RevoluteJoint>,
         ReadStorage<'a, DestroyEntity>,
         ReadExpect<'a, UpdateDeltaTime>,
     );
 
-    fn run(&mut self, (entities, rooms, in_rooms, sizes, mut positions, mut velocities, forces, mut aims, mut collision_sets, destroy_entities, delta_time): Self::SystemData) {
+    fn run(&mut self, (entities, rooms, in_rooms, sizes, shapes, mut positions, mut velocities,
+        forces, mut aims, mut collision_sets, revolute_joints, destroy_entities, delta_time): Self::SystemData) {
         for (entity, _room, size) in (&*entities, &rooms, &sizes).join() {
             let world = &mut self.world;
             let physical_rooms = &mut self.physical_rooms;
@@ -187,13 +195,13 @@ impl<'a> System<'a> for PhysicsSystem {
                 });
         }
 
-        for (entity, in_room, position, velocity) in (&*entities, &in_rooms, &mut positions, &mut velocities).join() {
+        for (entity, in_room, shape, position, velocity) in (&*entities, &in_rooms, &shapes, &mut positions, &mut velocities).join() {
             let world = &mut self.world;
             let physical_objects = &mut self.physical_objects;
 
             let physical_object = physical_objects.entry(entity)
                 .or_insert_with(|| {
-                    let mut body = RigidBody::new_dynamic(Ball::new(10.0), 1.0, 0.3, 0.5);
+                    let mut body = RigidBody::new_dynamic(Ball::new(shape.size), 1.0, 0.3, 0.5);
 
                     let collision_group = in_room.room_entity as usize; // FIXME: :(
                     let mut collision_groups = RigidBodyCollisionGroups::new_dynamic();
@@ -224,6 +232,28 @@ impl<'a> System<'a> for PhysicsSystem {
             let physical_velocity = rigid_body.lin_vel();
             velocity.x = physical_velocity.x;
             velocity.y = physical_velocity.y;
+        }
+
+        for (entity, revolute_joint) in (&*entities, &revolute_joints).join() {
+            let entity2 = entities.entity(revolute_joint.linked_to_entity);
+
+            let object1 = self.physical_objects.get(&entity);
+            let object2 = self.physical_objects.get(&entity2);
+            let world = &mut self.world;
+
+            if let (Some(object1), Some(object2)) = (object1, object2) {
+                self.physical_revolute_joints.entry(entity)
+                    .or_insert_with(|| {
+                        use nphysics2d::detection::joint::Anchor;
+                        use nphysics2d::math::Point;
+
+                        let anchor1 = Anchor::new(Some(object1.body.clone()), Point::new(0.0, 0.0));
+                        let anchor2 = Anchor::new(Some(object2.body.clone()), Point::new(0.0, 0.0));
+                        let joint = BallInSocket::new(anchor1, anchor2);
+
+                        world.add_ball_in_socket(joint)
+                    });
+            }
         }
 
         for (entity, position, mut aim) in (&*entities, &positions, &mut aims).join() {

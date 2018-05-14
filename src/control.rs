@@ -3,7 +3,7 @@ use nalgebra::Vector2;
 
 use UpdateDeltaTime;
 use input::{PlayerController, Movement};
-use physics::{Velocity, Force, Aim, CollisionSet, InRoom};
+use physics::{Velocity, Force, Aim, CollisionSet, InRoom, RevoluteJoint};
 use draw::{Position, Shape};
 use specs::LazyUpdate;
 
@@ -72,7 +72,7 @@ impl <'a> System<'a> for FireHook {
     );
 
     fn run(&mut self, (entities, mut player_controllers, positions, in_rooms, aims, lazy_update): Self::SystemData) {
-        for (_entity, mut player_controller, position, in_room, aim) in (&*entities, &mut player_controllers, &positions, &in_rooms, &aims).join() {
+        for (entity, mut player_controller, position, in_room, aim) in (&*entities, &mut player_controllers, &positions, &in_rooms, &aims).join() {
             if player_controller.hooking && !player_controller.hook_established {
                 // Create grappling hook chain if possible
                 let source = Vector2::new(position.x, position.y);
@@ -86,15 +86,20 @@ impl <'a> System<'a> for FireHook {
                 let direction = chain_vector.normalize();
                 let link_count = (chain_vector / 10.0).norm().floor();
 
-                for i in 2..link_count as i32 {
-                    let chain_link_position = source + direction * (i as f64);
+                let mut linked_to_entity = entity.id();
 
-                    lazy_update.create_entity(&entities)
+                for i in 2..link_count as i32 {
+                    let chain_link_position = source + direction * 10.0 * (i as f64);
+
+                    let new_entity = lazy_update.create_entity(&entities)
                         .with(Position { x: chain_link_position.x, y: chain_link_position.y })
                         .with(Shape { size: 3.0 })
                         .with(Velocity::default())
                         .with(InRoom { .. *in_room })
+                        .with(RevoluteJoint { linked_to_entity })
                         .build();
+
+                    linked_to_entity = new_entity.id();
                 }
 
                 println!("Count: {}, direction: {:?}", link_count, direction);
