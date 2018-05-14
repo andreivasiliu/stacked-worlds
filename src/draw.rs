@@ -140,9 +140,14 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
                 let rect = [position.x - size, position.y - size, size * 2.0, size * 2.0];
                 let context = context.trans(room_position.x, room_position.y);
 //                rectangle([0.2, 0.2, 0.5, 0.01], room_rectangle, context.transform, gl);
+                let color = if shape.size == 3.0 {
+                    [0.3, 0.3, 0.3, 1.0]
+                } else {
+                    [0.3, 0.3, 1.0, 1.0]
+                };
 
                 // Why can't I use 2.0 instead of 1.9999? Who knows.
-                circle_arc([0.3, 0.3, 1.0, 1.0], 0.5, 0.0, 1.9999 * ::std::f64::consts::PI,
+                circle_arc(color,0.5, 0.0, 1.9999 * ::std::f64::consts::PI,
                            rect, context.transform, gl);
             });
         }

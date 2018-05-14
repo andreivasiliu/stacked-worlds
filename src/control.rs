@@ -76,8 +76,8 @@ impl <'a> System<'a> for FireHook {
             if player_controller.hooking && !player_controller.hook_established {
                 // Create grappling hook chain if possible
                 let source = Vector2::new(position.x, position.y);
-                let target = if let Some(point) = aim.aiming_at_point {
-                    Vector2::new(point.0, point.1)
+                let (target, target_entity) = if let (Some(point), Some(entity)) = (aim.aiming_at_point, aim.aiming_at_entity) {
+                    (Vector2::new(point.0, point.1), entity)
                 } else {
                     continue
                 };
@@ -86,9 +86,9 @@ impl <'a> System<'a> for FireHook {
                 let direction = chain_vector.normalize();
                 let link_count = (chain_vector / 10.0).norm().floor();
 
-                let mut linked_to_entity = entity.id();
+                let mut linked_to_entity = target_entity.id();
 
-                for i in 2..link_count as i32 {
+                for i in (2..=link_count as i32).rev() {
                     let chain_link_position = source + direction * 10.0 * (i as f64);
 
                     let new_entity = lazy_update.create_entity(&entities)
@@ -102,10 +102,13 @@ impl <'a> System<'a> for FireHook {
                     linked_to_entity = new_entity.id();
                 }
 
+                lazy_update.insert(entity, RevoluteJoint { linked_to_entity });
+
                 println!("Count: {}, direction: {:?}", link_count, direction);
                 player_controller.hook_established = true;
             } else if !player_controller.hooking && player_controller.hook_established {
                 // Destroy grappling hook chain
+
                 player_controller.hook_established = false;
             }
         }

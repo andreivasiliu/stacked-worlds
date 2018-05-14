@@ -237,18 +237,33 @@ impl<'a> System<'a> for PhysicsSystem {
         for (entity, revolute_joint) in (&*entities, &revolute_joints).join() {
             let entity2 = entities.entity(revolute_joint.linked_to_entity);
 
-            let object1 = self.physical_objects.get(&entity);
-            let object2 = self.physical_objects.get(&entity2);
+            fn get_object_or_room_body(system: &PhysicsSystem, entity: &Entity) -> Option<RigidBodyHandle<f64>> {
+                if let Some(object) = system.physical_objects.get(entity) {
+                    Some(object.body.clone())
+                } else if let Some(room) = system.physical_rooms.get(entity) {
+                    Some(room.walls[0].clone())
+                } else {
+                    None
+                }
+            }
+
+            let rigid_body1 = get_object_or_room_body(&self, &entity);
+            let rigid_body2 = get_object_or_room_body(&self, &entity2);
+
             let world = &mut self.world;
 
-            if let (Some(object1), Some(object2)) = (object1, object2) {
+            if let (Some(rigid_body1), Some(rigid_body2)) = (rigid_body1, rigid_body2) {
                 self.physical_revolute_joints.entry(entity)
                     .or_insert_with(|| {
                         use nphysics2d::detection::joint::Anchor;
                         use nphysics2d::math::Point;
 
-                        let anchor1 = Anchor::new(Some(object1.body.clone()), Point::new(0.0, 0.0));
-                        let anchor2 = Anchor::new(Some(object2.body.clone()), Point::new(0.0, 0.0));
+                        let (pos1, pos2) = (rigid_body1.borrow().position_center(), rigid_body2.borrow().position_center());
+
+                        let relative_position = Point::new(pos1.x - pos2.x, pos1.y - pos2.y);
+
+                        let anchor1 = Anchor::new(Some(rigid_body1), Point::new(0.0, 0.0));
+                        let anchor2 = Anchor::new(Some(rigid_body2), relative_position);
                         let joint = BallInSocket::new(anchor1, anchor2);
 
                         world.add_ball_in_socket(joint)
