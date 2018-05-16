@@ -134,7 +134,9 @@ impl Game {
 
         control::ControlObjects.run_now(&mut self.specs_world.res);
 
+        self.specs_world.maintain();
         self.physics_system.run_now(&mut self.specs_world.res);
+
         animate::UpdateAnimations.run_now(&mut self.specs_world.res);
         control::UpdateCooldowns.run_now(&mut self.specs_world.res);
         control::FireHook.run_now(&mut self.specs_world.res);
@@ -187,7 +189,7 @@ impl Game {
 
             self.specs_world.create_entity()
                 .with(draw::Position { x: width / 2.0 + 5.0, y: height / 2.0 + 10.0 })
-                .with(draw::Shape { size: 10.0 })
+                .with(draw::Shape { size: 10.0, class: draw::ShapeClass::Ball })
                 .with(physics::Velocity::default())
                 .with(physics::InRoom { room_entity: entity.id() })
                 .marked::<U64Marker>()
@@ -195,7 +197,7 @@ impl Game {
 
             self.specs_world.create_entity()
                 .with(draw::Position { x: width / 2.0 - 5.0, y: height / 2.0 - 10.0 })
-                .with(draw::Shape { size: 10.0 })
+                .with(draw::Shape { size: 10.0, class: draw::ShapeClass::Ball })
                 .with(physics::Velocity::default())
                 .with(physics::InRoom { room_entity: entity.id() })
                 .marked::<U64Marker>()
@@ -204,7 +206,7 @@ impl Game {
             if entity.id() == 0 {
                 self.specs_world.create_entity()
                     .with(draw::Position { x: width / 2.0, y: 20.0 })
-                    .with(draw::Shape { size: 10.0 })
+                    .with(draw::Shape { size: 10.0, class: draw::ShapeClass::Ball })
                     .with(physics::Velocity::default())
                     .with(physics::InRoom { room_entity: entity.id() })
                     .with(input::PlayerController::default())
@@ -267,6 +269,7 @@ pub fn run() -> Result<(), Error> {
     world.register::<saveload::DestroyEntity>();
     world.register::<input::PlayerController>();
     world.register::<control::Jump>();
+    world.register::<control::ChainLink>();
     world.register::<draw::Position>();
     world.register::<draw::Size>();
     world.register::<draw::Shape>();

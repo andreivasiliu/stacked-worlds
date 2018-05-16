@@ -11,6 +11,7 @@ use physics::CollisionSet;
 use nalgebra::Vector2;
 use control::Jump;
 use physics::Aim;
+use control::ChainLink;
 
 #[derive(Debug, Component, Serialize, Deserialize, Clone, Copy)]
 #[storage(VecStorage)]
@@ -26,10 +27,17 @@ pub struct Size {
     pub height: f64,
 }
 
-#[derive(Component, Debug, Serialize, Deserialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub enum ShapeClass {
+    Ball,
+    ChainLink,
+}
+
+#[derive(Component, Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
 #[storage(VecStorage)]
 pub struct Shape {
     pub size: f64,
+    pub class: ShapeClass,
 }
 
 #[derive(Component, Debug, Serialize, Deserialize, Clone, Copy)]
@@ -125,6 +133,10 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
 
     fn run(&mut self, (entities, positions, shapes, in_rooms, collision_sets, jumps, aims): Self::SystemData) {
         for (_entity, position, shape, in_room) in (&*entities, &positions, &shapes, &in_rooms).join() {
+            if shape.class != ShapeClass::Ball {
+                continue
+            }
+
             let room_entity = entities.entity(in_room.room_entity);
 
             let room_position = match positions.get(room_entity) {
@@ -132,29 +144,22 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
                 None => continue,
             };
 
-            let size = shape.size;
-
             self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
                 use graphics::{Transformed, circle_arc};
 
+                let size = shape.size;
                 let rect = [position.x - size, position.y - size, size * 2.0, size * 2.0];
                 let context = context.trans(room_position.x, room_position.y);
-//                rectangle([0.2, 0.2, 0.5, 0.01], room_rectangle, context.transform, gl);
-                let color = if shape.size == 3.0 {
-                    [0.3, 0.3, 0.3, 1.0]
-                } else {
-                    [0.3, 0.3, 1.0, 1.0]
-                };
 
                 // Why can't I use 2.0 instead of 1.9999? Who knows.
-                circle_arc(color,0.5, 0.0, 1.9999 * ::std::f64::consts::PI,
+                circle_arc([0.3, 0.3, 1.0, 1.0], 0.5, 0.0, 1.9999 * ::std::f64::consts::PI,
                            rect, context.transform, gl);
             });
         }
 
         for (_entity, position, in_room, collision_set) in (&*entities, &positions, &in_rooms, &collision_sets).join() {
             if collision_set.time_since_collision > 0.2 {
-                continue
+                continue;
             }
 
             let room_entity = entities.entity(in_room.room_entity);
@@ -234,9 +239,64 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
                     let p4 = Vector2::new(aiming_at_point.0 + room_position.x,
                                           aiming_at_point.1 + room_position.y);
 
-                    line([0.5, 0.0, 0.0, 0.1], 0.5,
+                    line([0.5, 0.0, 0.0, 0.3], 0.5,
                          [p3.x, p3.y, p4.x, p4.y], context.transform, gl);
                 }
+            });
+        }
+    }
+}
+
+pub struct DrawChainLinks<'a> {
+    pub gl_graphics: &'a mut GlGraphics,
+    pub render_args: RenderArgs,
+}
+
+impl <'a, 'b> System<'a> for DrawChainLinks<'b> {
+    type SystemData = (
+        Entities<'a>,
+        ReadStorage<'a, Position>,
+        ReadStorage<'a, Shape>,
+        ReadStorage<'a, InRoom>,
+        ReadStorage<'a, ChainLink>,
+    );
+
+    fn run(&mut self, (entities, positions, shapes, in_rooms, chain_links): Self::SystemData) {
+        for (_entity, position, shape, in_room, chain_link) in (&*entities, &positions, &shapes, &in_rooms, &chain_links).join() {
+            if shape.class != ShapeClass::ChainLink {
+                continue;
+            }
+
+            let room_entity = entities.entity(in_room.room_entity);
+
+            let room_position = match positions.get(room_entity) {
+                Some(room_position) => room_position,
+                None => continue,
+            };
+
+            self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
+                use graphics::{Transformed, circle_arc};
+
+                let size = shape.size;
+                let rect = [position.x - size, position.y - size, size * 2.0, size * 2.0];
+                let context = context.trans(room_position.x, room_position.y);
+                let animation = chain_link.destruction_animation as f32;
+
+                let brightness = if chain_link.expire {
+                    if animation >= 0.2 {
+                        0.3
+                    } else if animation >= 0.1 {
+                        0.3 + 0.7 * (1.0 - (animation / 0.1 - 1.0))
+                    } else {
+                        1.0
+                    }
+                } else {
+                    (0.3 + 5.0 * chain_link.creation_animation as f32).min(1.0)
+                };
+
+                circle_arc([0.3, 0.3, brightness, 1.0],
+                           0.5, 0.0, 1.9999 * ::std::f64::consts::PI,
+                           rect, context.transform, gl);
             });
         }
     }
@@ -276,6 +336,9 @@ pub fn run_draw_systems(specs_world: &mut World,
         .run_now(&mut specs_world.res);
 
     DrawBalls { gl_graphics, render_args }
+        .run_now(&mut specs_world.res);
+
+    DrawChainLinks { gl_graphics, render_args }
         .run_now(&mut specs_world.res);
 
     DrawSelectionBox { gl_graphics, render_args }

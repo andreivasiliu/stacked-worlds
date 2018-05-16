@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use nphysics2d::object::RigidBodyHandle;
 use nalgebra::Real;
 use specs::world::Index;
-use draw::{Position, Size, Shape};
+use draw::{Position, Size, Shape, ShapeClass};
 use specs::prelude::Entity;
 use ncollide::shape::Plane;
 use nphysics2d::object::RigidBodyCollisionGroups;
@@ -106,12 +106,17 @@ impl<P: ncollide::math::Point, M> GetEntity for CollisionObject<P, M, WorldObjec
 
 type RevoluteJointHandle<N> = Rc<RefCell<BallInSocket<N>>>;
 
+pub struct PhysicalJoint<N: Real> {
+    pub revolute_joint_handle: RevoluteJointHandle<N>,
+    pub visited: bool,
+}
+
 pub struct PhysicsSystem<N: Real = f64> {
     world: World<N>,
 
     physical_objects: HashMap<Entity, PhysicalObject<N>>,
     physical_rooms: HashMap<Entity, PhysicalRoom<N>>,
-    physical_revolute_joints: HashMap<Entity, RevoluteJointHandle<N>>
+    physical_joints: HashMap<Entity, PhysicalJoint<N>>,
 }
 
 impl PhysicsSystem<f64> {
@@ -124,7 +129,7 @@ impl PhysicsSystem<f64> {
             world,
             physical_objects: HashMap::new(),
             physical_rooms: HashMap::new(),
-            physical_revolute_joints: HashMap::new(),
+            physical_joints: HashMap::new(),
         }
     }
 }
@@ -201,7 +206,12 @@ impl<'a> System<'a> for PhysicsSystem {
 
             let physical_object = physical_objects.entry(entity)
                 .or_insert_with(|| {
-                    let mut body = RigidBody::new_dynamic(Ball::new(shape.size), 1.0, 0.3, 0.5);
+                    let density = match shape.class {
+                        ShapeClass::ChainLink => 0.8,
+                        ShapeClass::Ball => 1.0,
+                    };
+
+                    let mut body = RigidBody::new_dynamic(Ball::new(shape.size), density, 0.3, 0.5);
 
                     let collision_group = in_room.room_entity as usize; // FIXME: :(
                     let mut collision_groups = RigidBodyCollisionGroups::new_dynamic();
@@ -216,7 +226,7 @@ impl<'a> System<'a> for PhysicsSystem {
 
                     let body = world.add_rigid_body(body);
 
-                    println!("Created object {:?}, group {}", entity, collision_group);
+                    // println!("Created object {:?}, group {}", entity, collision_group);
 
                     PhysicalObject {
                         body
@@ -232,6 +242,12 @@ impl<'a> System<'a> for PhysicsSystem {
             let physical_velocity = rigid_body.lin_vel();
             velocity.x = physical_velocity.x;
             velocity.y = physical_velocity.y;
+        }
+
+        // Clear the visited flag of all joints; after processing entities, all
+        // unvisited ones will be deleted
+        for joint in self.physical_joints.values_mut() {
+            joint.visited = false;
         }
 
         for (entity, revolute_joint) in (&*entities, &revolute_joints).join() {
@@ -253,7 +269,7 @@ impl<'a> System<'a> for PhysicsSystem {
             let world = &mut self.world;
 
             if let (Some(rigid_body1), Some(rigid_body2)) = (rigid_body1, rigid_body2) {
-                self.physical_revolute_joints.entry(entity)
+                let physical_joint = self.physical_joints.entry(entity)
                     .or_insert_with(|| {
                         use nphysics2d::detection::joint::Anchor;
                         use nphysics2d::math::Point;
@@ -266,10 +282,27 @@ impl<'a> System<'a> for PhysicsSystem {
                         let anchor2 = Anchor::new(Some(rigid_body2), relative_position);
                         let joint = BallInSocket::new(anchor1, anchor2);
 
-                        world.add_ball_in_socket(joint)
+                        PhysicalJoint {
+                            revolute_joint_handle: world.add_ball_in_socket(joint),
+                            visited: true,
+                        }
                     });
+
+                physical_joint.visited = true;
             }
         }
+
+        let () = {
+            let world = &mut self.world;
+            // Delete all unvisited joints; it means their components were destroyed.
+            self.physical_joints.retain(|_entity, joint| {
+                if !joint.visited {
+                    world.remove_ball_in_socket(&joint.revolute_joint_handle);
+                }
+
+                joint.visited
+            });
+        };
 
         for (entity, position, mut aim) in (&*entities, &positions, &mut aims).join() {
             use nalgebra::{self, Point2};
@@ -322,7 +355,7 @@ impl<'a> System<'a> for PhysicsSystem {
         for (entity, _destroy_entity, _in_room) in (&*entities, &destroy_entities, &in_rooms).join() {
             if let Some(physical_object) = self.physical_objects.remove(&entity) {
                 self.world.remove_rigid_body(&physical_object.body);
-                println!("Destroyed object {:?}", entity);
+                // println!("Destroyed object {:?}", entity);
             }
         }
 
@@ -334,6 +367,12 @@ impl<'a> System<'a> for PhysicsSystem {
                 println!("Destroyed room {:?}", entity);
             }
             // FIXME: destroy objects in the room too
+        }
+
+        for (entity, _destroy_entity, _revolute_joint) in (&*entities, &destroy_entities, &revolute_joints).join() {
+            if let Some(physical_joint) = self.physical_joints.remove(&entity) {
+                self.world.remove_ball_in_socket(&physical_joint.revolute_joint_handle);
+            }
         }
 
         // Let time flow in the physics world
