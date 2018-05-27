@@ -49,7 +49,7 @@ extern crate specs_derive;
 extern crate ron;
 extern crate nalgebra;
 extern crate nphysics2d;
-extern crate ncollide;
+extern crate ncollide2d;
 extern crate core;
 
 
@@ -321,6 +321,7 @@ pub fn run() -> Result<(), Error> {
         }
     }
 
+    game.specs_world.maintain();
     saveload::SaveWorld { file_name: "storage.ron".into() }.run_now(&game.specs_world.res);
 
 //    let state_file = std::fs::File::create("state.json")

@@ -15,6 +15,6 @@ serde = "*"
 specs = { version = "0.11.0-alpha5", features = ["serde"], path = "../specs" }
 specs-derive = "0.2"
 ron = "*"
-nphysics2d = "0.7"
-nalgebra = "0.13"
-ncollide = "0.13"
+nphysics2d = { version = "0.8", path = "../nphysics/build/nphysics2d" }
+nalgebra = "0.14.4"
+ncollide2d = "0.15.3"

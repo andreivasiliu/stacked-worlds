@@ -29,10 +29,11 @@ impl <'a> System<'a> for ControlObjects {
 
     fn run(&mut self, (entities, player_controller, collision_sets, mut forces, mut jumps): Self::SystemData) {
         let speed = 100000.0;
+        let jump_speed = 300.0;
 
         for (_entity, mut force) in (&*entities, &mut forces).join() {
-            force.x = 0.0;
-            force.y = 0.0;
+            force.continuous = (0.0, 0.0);
+            force.impulse = (0.0, 0.0);
         }
 
         for (_entity, player_controller, mut force) in (&*entities, &player_controller, &mut forces).join() {
@@ -42,21 +43,21 @@ impl <'a> System<'a> for ControlObjects {
                 Movement::None => (0.0, 0.0),
             };
 
-            force.x += x;
-            force.y += y;
+            force.continuous = (force.continuous.0 + x, force.continuous.1 + y);
         }
 
         for (_entity, player_controller, mut jump, collision_set, mut force) in (&*entities, &player_controller, &mut jumps, &collision_sets, &mut forces).join() {
             if player_controller.jumping && collision_set.time_since_collision < 0.2 && jump.cooldown <= 0.0 {
                 let jump_direction = -Vector2::new(collision_set.last_collision_normal.0,
                                                    collision_set.last_collision_normal.1).normalize();
-                let jump_force = jump_direction * speed * 100.0;
+                let jump_impulse = jump_direction * jump_speed;
 
-                // FIXME: This needs to be an impulse, not a force
-                force.x += jump_force.x;
-                force.y += jump_force.y;
+                force.impulse = (
+                    force.impulse.0 + jump_impulse.x,
+                    force.impulse.1 + jump_impulse.y
+                );
 
-                jump.cooldown += 0.2;
+                jump.cooldown += 0.25;
             }
         }
     }
@@ -117,7 +118,7 @@ impl <'a> System<'a> for FireHook {
                         .with(InRoom { .. *in_room })
                         .with(ChainLink { next_link, creation_animation, .. ChainLink::default() })
                         .with(RevoluteJoint { linked_to_entity })
-                        //.marked::<U64Marker>()
+                        .marked::<U64Marker>()
                         .build();
 
                     linked_to_entity = new_entity.id();

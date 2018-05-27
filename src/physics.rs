@@ -1,30 +1,33 @@
 extern crate specs;
 extern crate nphysics2d;
-extern crate ncollide;
+extern crate ncollide2d;
 
 use specs::prelude::{WriteStorage, ReadStorage, VecStorage, DenseVecStorage, System, Entities, Join};
-use nphysics2d::world::World;
-use nalgebra::{Vector2, Translation2};
-use nphysics2d::object::RigidBody;
-use ncollide::shape::Ball;
-use saveload::DestroyEntity;
-use std::collections::HashMap;
-use nphysics2d::object::RigidBodyHandle;
-use nalgebra::Real;
 use specs::world::Index;
-use draw::{Position, Size, Shape, ShapeClass};
 use specs::prelude::Entity;
-use ncollide::shape::Plane;
-use nphysics2d::object::RigidBodyCollisionGroups;
 use specs::prelude::ReadExpect;
-use UpdateDeltaTime;
-use nphysics2d::detection::constraint::Constraint;
-use nphysics2d::object::WorldObject;
-use ncollide::world::CollisionObject;
-use nphysics2d::detection::joint::BallInSocket;
-use std::cell::RefCell;
-use std::rc::Rc;
+use nphysics2d::world::World;
+use nphysics2d::object::RigidBody;
+use nphysics2d::object::BodyHandle;
+use nphysics2d::object::Material;
+use nphysics2d::algebra::Force2;
+use nphysics2d::algebra::Velocity2;
+use nphysics2d::joint::RevoluteConstraint;
+use nphysics2d::joint::ConstraintHandle;
+use nalgebra::{Vector2, Isometry2, Unit, zero};
+use ncollide2d::shape::Ball;
+use ncollide2d::shape::Plane;
+use ncollide2d::shape::ShapeHandle;
+use ncollide2d::world::CollisionObjectHandle;
+use ncollide2d::world::CollisionGroups;
+use std::collections::HashMap;
 
+use saveload::DestroyEntity;
+use draw::{Position, Size, Shape, ShapeClass};
+use UpdateDeltaTime;
+
+
+const COLLIDER_MARGIN: f64 = 0.1;
 
 #[derive(Component, Debug, Serialize, Deserialize, Clone, Copy)]
 #[storage(VecStorage)]
@@ -47,8 +50,8 @@ pub struct Velocity {
 #[derive(Component, Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq)]
 #[storage(VecStorage)]
 pub struct Force {
-    pub x: f64,
-    pub y: f64,
+    pub continuous: (f64, f64),
+    pub impulse: (f64, f64),
 }
 
 #[derive(Component, Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq)]
@@ -78,59 +81,84 @@ pub struct RevoluteJoint {
     pub linked_to_entity: Index,
 }
 
-struct PhysicalObject<N: Real> {
-    body: RigidBodyHandle<N>,
+struct PhysicalObject {
+    body_handle: BodyHandle,
+    collision_object_handle: CollisionObjectHandle,
+    room_entity: Entity,
 }
 
 /// Internal object for the physics system
-struct PhysicalRoom<N: Real> {
-    walls: [RigidBodyHandle<N>; 4],
+struct PhysicalRoom {
+    world: World<f64>,
+    walls: [CollisionObjectHandle; 4],
 }
 
 trait GetEntity {
     fn get_entity(&self) -> Option<Entity>;
 }
 
-impl<P: ncollide::math::Point, M> GetEntity for CollisionObject<P, M, WorldObject<f64>> {
-    fn get_entity(&self) -> Option<Entity> {
-        if let WorldObject::RigidBody(ref rigid_body) = self.data {
-            if let Some(entity_box) = rigid_body.borrow().user_data() {
-                if let Some(entity) = entity_box.downcast_ref::<Entity>() {
-                    return Some(*entity)
-                }
-            }
-        }
-        None
-    }
+pub struct PhysicalConstraint {
+    revolute_constraint_handle: ConstraintHandle,
+    room_entity: Entity,
+    visited: bool,
 }
 
-type RevoluteJointHandle<N> = Rc<RefCell<BallInSocket<N>>>;
+pub struct PhysicsSystem {
+    physical_objects: HashMap<Entity, PhysicalObject>,
+    physical_rooms: HashMap<Entity, PhysicalRoom>,
 
-pub struct PhysicalJoint<N: Real> {
-    pub revolute_joint_handle: RevoluteJointHandle<N>,
-    pub visited: bool,
+    collision_object_to_entity: HashMap<(Entity, CollisionObjectHandle), Entity>,
+    physical_constraints: HashMap<Entity, PhysicalConstraint>,
 }
 
-pub struct PhysicsSystem<N: Real = f64> {
-    world: World<N>,
-
-    physical_objects: HashMap<Entity, PhysicalObject<N>>,
-    physical_rooms: HashMap<Entity, PhysicalRoom<N>>,
-    physical_joints: HashMap<Entity, PhysicalJoint<N>>,
-}
-
-impl PhysicsSystem<f64> {
+impl PhysicsSystem {
     pub fn new() -> Self {
-        let mut world = World::new();
-
-        world.set_gravity(Vector2::new(0.0, 500.0));
-
         PhysicsSystem {
-            world,
             physical_objects: HashMap::new(),
             physical_rooms: HashMap::new(),
-            physical_joints: HashMap::new(),
+            physical_constraints: HashMap::new(),
+
+            collision_object_to_entity: HashMap::new(),
         }
+    }
+
+    fn get_world_mut(&mut self, entity: &Entity) -> Option<&mut World<f64>> {
+        let room_entity = match self.physical_objects.get(entity) {
+            Some(physical_object) => physical_object.room_entity,
+            None => return None,
+        };
+
+        match self.physical_rooms.get_mut(&room_entity) {
+            Some(physical_room) => Some(&mut physical_room.world),
+            None => return None,
+        }
+    }
+
+    fn get_world(&self, entity: &Entity) -> Option<&World<f64>> {
+        let room_entity = match self.physical_objects.get(entity) {
+            Some(physical_object) => physical_object.room_entity,
+            None => return None,
+        };
+
+        match self.physical_rooms.get(&room_entity) {
+            Some(physical_room) => Some(&physical_room.world),
+            None => return None,
+        }
+    }
+
+    fn get_rigid_body(&mut self, entity: &Entity) -> Option<&mut RigidBody<f64>> {
+        let body_handle = match self.physical_objects.get_mut(entity) {
+            Some(physical_object) => physical_object.body_handle,
+            None => return None,
+        };
+
+        if let Some(world) = self.get_world_mut(entity) {
+            if let Some(rigid_body) = world.rigid_body_mut(body_handle) {
+                return Some(rigid_body)
+            }
+        }
+
+        None
     }
 }
 
@@ -155,187 +183,256 @@ impl<'a> System<'a> for PhysicsSystem {
     fn run(&mut self, (entities, rooms, in_rooms, sizes, shapes, mut positions, mut velocities,
         forces, mut aims, mut collision_sets, revolute_joints, destroy_entities, delta_time): Self::SystemData) {
         for (entity, _room, size) in (&*entities, &rooms, &sizes).join() {
-            let world = &mut self.world;
             let physical_rooms = &mut self.physical_rooms;
+            let collision_object_to_entity = &mut self.collision_object_to_entity;
 
             let _physical_room = physical_rooms.entry(entity)
                 .or_insert_with(|| {
-                    let south_wall = Plane::new(Vector2::new(0.0, 1.0)); // pointing north
-                    let north_wall = Plane::new(Vector2::new(0.0, -1.0)); // pointing south
-                    let west_wall = Plane::new(Vector2::new(1.0, 0.0)); // pointing east
-                    let east_wall = Plane::new(Vector2::new(-1.0, 0.0)); // pointing west
+                    let mut world = World::new();
 
-                    let mut south_wall = RigidBody::new_static(south_wall, 0.5, 0.5);
-                    let mut north_wall = RigidBody::new_static(north_wall, 0.5, 0.5);
-                    north_wall.append_translation(&Translation2::new(0.0, size.height));
-                    let mut west_wall = RigidBody::new_static(west_wall, 0.5, 0.5);
-                    let mut east_wall = RigidBody::new_static(east_wall, 0.5, 0.5);
-                    east_wall.append_translation(&Translation2::new(size.width, 0.0));
+                    world.set_gravity(Vector2::new(0.0, 500.0));
 
-                    // Set a collision group so that this room's walls and the objects inside can
-                    // only collide with each other.
-                    let collision_group = entity.id() as usize; // FIXME: :(
-                    let mut collision_groups = RigidBodyCollisionGroups::new_static();
-                    collision_groups.set_membership(&[collision_group]);
-                    collision_groups.set_whitelist(&[collision_group]);
-
-
-                    for wall in [&mut south_wall, &mut north_wall, &mut west_wall, &mut east_wall].iter_mut() {
-                        wall.set_collision_groups(collision_groups);
-                        wall.set_user_data(Some(Box::new(entity)));
+                    fn create_wall(world: &mut World<f64>, normal: Vector2<f64>, isometry: Isometry2<f64>) -> CollisionObjectHandle {
+                        world.add_collider(
+                            COLLIDER_MARGIN,
+                            ShapeHandle::new(Plane::new(Unit::new_normalize(normal))),
+                            BodyHandle::ground(),
+                            isometry,
+                            Material::default(),
+                        )
                     }
 
-                    let south_wall = world.add_rigid_body(south_wall);
-                    let north_wall = world.add_rigid_body(north_wall);
-                    let west_wall = world.add_rigid_body(west_wall);
-                    let east_wall = world.add_rigid_body(east_wall);
+                    let south_wall = Vector2::new(0.0, 1.0); // pointing north
+                    let north_wall = Vector2::new(0.0, -1.0); // pointing south
+                    let west_wall = Vector2::new(1.0, 0.0); // pointing east
+                    let east_wall = Vector2::new(-1.0, 0.0); // pointing west
 
-                    let walls = [south_wall, north_wall, west_wall, east_wall];
+                    let walls = [
+                        create_wall(&mut world, south_wall, Isometry2::new(zero(), 0.0)),
+                        create_wall(&mut world, north_wall, Isometry2::new(Vector2::new(0.0, size.height), 0.0)),
+                        create_wall(&mut world, west_wall, Isometry2::new(zero(), 0.0)),
+                        create_wall(&mut world, east_wall, Isometry2::new(Vector2::new(size.width, 0.0), 0.0)),
+                    ];
 
-                    println!("Created room {:?}, group {}", entity, collision_group);
+                    for collision_object_handle in walls.iter() {
+                        collision_object_to_entity.insert((entity, *collision_object_handle), entity);
+                    }
+
+                    println!("Created room {:?}", entity);
 
                     PhysicalRoom {
-                        walls
+                        world,
+                        walls,
                     }
                 });
         }
 
         for (entity, in_room, shape, position, velocity) in (&*entities, &in_rooms, &shapes, &mut positions, &mut velocities).join() {
-            let world = &mut self.world;
             let physical_objects = &mut self.physical_objects;
+            let collision_object_to_entity = &mut self.collision_object_to_entity;
+
+            let room_entity = entities.entity(in_room.room_entity);
+            let world = if let Some(physical_room) = self.physical_rooms.get_mut(&room_entity) {
+                &mut physical_room.world
+            } else {
+                eprintln!("Could not find the physical world {} for object {}",
+                          room_entity.id(), entity.id());
+                // Consider better logging and queuing InRoom component deletion
+                continue
+            };
 
             let physical_object = physical_objects.entry(entity)
                 .or_insert_with(|| {
+                    use nphysics2d::volumetric::Volumetric;
+
                     let density = match shape.class {
-                        ShapeClass::ChainLink => 0.8,
+                        ShapeClass::ChainLink => 1.0,
                         ShapeClass::Ball => 1.0,
                     };
 
-                    let mut body = RigidBody::new_dynamic(Ball::new(shape.size), density, 0.3, 0.5);
+                    let shape_handle = ShapeHandle::new(Ball::new(shape.size));
 
-                    let collision_group = in_room.room_entity as usize; // FIXME: :(
-                    let mut collision_groups = RigidBodyCollisionGroups::new_dynamic();
-                    collision_groups.set_membership(&[collision_group]);
-                    collision_groups.set_whitelist(&[collision_group]);
-                    body.set_collision_groups(collision_groups);
+                    //let mut body = RigidBody::new(Ball::new(shape.size), density, 0.3, 0.5);
+                    let body_handle = world.add_rigid_body(
+                        Isometry2::new(Vector2::new(position.x, position.y), 0.0),
+                        shape_handle.inertia(density),
+                        shape_handle.center_of_mass()
+                    );
 
-                    body.set_translation(Translation2::new(position.x, position.y));
-                    body.set_lin_vel(Vector2::new(velocity.x, velocity.y));
+                    let collision_object_handle = world.add_collider(
+                        COLLIDER_MARGIN,
+                        shape_handle,
+                        body_handle,
+                        Isometry2::new(zero(), 0.0),
+                        Material::default(),
+                    );
 
-                    body.set_user_data(Some(Box::new(entity)));
+                    collision_object_to_entity.insert((room_entity, collision_object_handle), entity);
 
-                    let body = world.add_rigid_body(body);
+                    let body = world.rigid_body_mut(body_handle)
+                        .expect("Cannot get reference to object that was just created");
 
-                    // println!("Created object {:?}, group {}", entity, collision_group);
+                    body.set_linear_velocity(Vector2::new(velocity.x, velocity.y));
+
+                    // FIXME: how do we get its entity? hashmap?
+                    //body.set_user_data(Some(Box::new(entity)));
 
                     PhysicalObject {
-                        body
+                        body_handle,
+                        collision_object_handle,
+                        room_entity,
                     }
                 });
 
-            let rigid_body = physical_object.body.borrow();
+            let rigid_body = world.rigid_body(physical_object.body_handle)
+                .expect("Cannot get reference to rigid body");;
 
-            let physical_position = rigid_body.position_center();
+            let physical_position = rigid_body.position().translation.vector;
             position.x = physical_position.x;
             position.y = physical_position.y;
 
-            let physical_velocity = rigid_body.lin_vel();
+            let physical_velocity = rigid_body.velocity().linear;
             velocity.x = physical_velocity.x;
             velocity.y = physical_velocity.y;
         }
 
         // Clear the visited flag of all joints; after processing entities, all
         // unvisited ones will be deleted
-        for joint in self.physical_joints.values_mut() {
-            joint.visited = false;
+        for constraint in self.physical_constraints.values_mut() {
+            constraint.visited = false;
         }
 
         for (entity, revolute_joint) in (&*entities, &revolute_joints).join() {
-            let entity2 = entities.entity(revolute_joint.linked_to_entity);
-
-            fn get_object_or_room_body(system: &PhysicsSystem, entity: &Entity) -> Option<RigidBodyHandle<f64>> {
+            fn get_object_or_room_body(system: &PhysicsSystem, entity: &Entity) -> Option<BodyHandle> {
                 if let Some(object) = system.physical_objects.get(entity) {
-                    Some(object.body.clone())
-                } else if let Some(room) = system.physical_rooms.get(entity) {
-                    Some(room.walls[0].clone())
+                    Some(object.body_handle)
+                } else if let Some(_room) = system.physical_rooms.get(entity) {
+                    Some(BodyHandle::ground())
                 } else {
                     None
                 }
             }
 
-            let rigid_body1 = get_object_or_room_body(&self, &entity);
-            let rigid_body2 = get_object_or_room_body(&self, &entity2);
+            fn get_room_entity(system: &PhysicsSystem, entity: &Entity) -> Option<Entity> {
+                if let Some(object) = system.physical_objects.get(entity) {
+                    Some(object.room_entity)
+                } else if system.physical_rooms.contains_key(entity) {
+                    Some(*entity)
+                } else {
+                    None
+                }
+            }
 
-            let world = &mut self.world;
+            fn get_body_position(world: &World<f64>, body_handle: BodyHandle) -> Vector2<f64> {
+                use nphysics2d::object::Body;
 
-            if let (Some(rigid_body1), Some(rigid_body2)) = (rigid_body1, rigid_body2) {
-                let physical_joint = self.physical_joints.entry(entity)
+                match world.body(body_handle) {
+                    Body::RigidBody(rigid_body) => rigid_body.position().translation.vector,
+                    Body::Ground(ground) => ground.position().translation.vector,
+                    Body::Multibody(_) => panic!("Attempted to add constraint to a multibody handle"),
+                }
+            }
+
+            let entity2 = entities.entity(revolute_joint.linked_to_entity);
+
+            let body1 = get_object_or_room_body(&self, &entity);
+            let body2 = get_object_or_room_body(&self, &entity2);
+
+            let room_entity1 = get_room_entity(&self, &entity);
+            let room_entity2 = get_room_entity(&self, &entity2);
+
+            let room_entity = match (room_entity1, room_entity2) {
+                (Some(room_entity1), Some(room_entity2)) if room_entity1 == room_entity2 => room_entity1,
+                _ => { eprintln!("Could not find room entity for {:?} {:?}", entity, entity2); continue },
+            };
+
+            let world = match self.physical_rooms.get_mut(&room_entity) {
+                Some(physical_room) => &mut physical_room.world,
+                None => { eprintln!("Could not find room for body"); continue },
+            };
+
+            if let (Some(body1), Some(body2)) = (body1, body2) {
+                let pos1 = get_body_position(&world, body1);
+                let pos2 = get_body_position(&world, body2);
+
+                let physical_constraint = self.physical_constraints.entry(entity)
                     .or_insert_with(|| {
-                        use nphysics2d::detection::joint::Anchor;
                         use nphysics2d::math::Point;
-
-                        let (pos1, pos2) = (rigid_body1.borrow().position_center(), rigid_body2.borrow().position_center());
 
                         let relative_position = Point::new(pos1.x - pos2.x, pos1.y - pos2.y);
 
-                        let anchor1 = Anchor::new(Some(rigid_body1), Point::new(0.0, 0.0));
-                        let anchor2 = Anchor::new(Some(rigid_body2), relative_position);
-                        let joint = BallInSocket::new(anchor1, anchor2);
+                        let constraint = RevoluteConstraint::new(
+                            body1,
+                            body2,
+                            Point::new(0.0, 0.0),
+                            relative_position,
+                        );
 
-                        PhysicalJoint {
-                            revolute_joint_handle: world.add_ball_in_socket(joint),
+                        let revolute_constraint_handle = world.add_constraint(constraint);
+
+                        PhysicalConstraint {
+                            revolute_constraint_handle,
+                            room_entity,
                             visited: true,
                         }
                     });
 
-                physical_joint.visited = true;
+                physical_constraint.visited = true;
+            } else {
+                eprintln!("No physical body found to create a joint betwen: {:?} <-> {:?}",
+                          entity, entity2);
             }
         }
 
-        let () = {
-            let world = &mut self.world;
+        for (room_entity, physical_room) in self.physical_rooms.iter_mut() {
             // Delete all unvisited joints; it means their components were destroyed.
-            self.physical_joints.retain(|_entity, joint| {
-                if !joint.visited {
-                    world.remove_ball_in_socket(&joint.revolute_joint_handle);
+            self.physical_constraints.retain(|_entity, constraint| {
+                if !constraint.visited && constraint.room_entity == *room_entity {
+                    physical_room.world.remove_constraint(constraint.revolute_constraint_handle);
                 }
 
-                joint.visited
+                constraint.visited
             });
         };
 
         for (entity, position, mut aim) in (&*entities, &positions, &mut aims).join() {
-            use nalgebra::{self, Point2};
-            use ncollide::query::Ray;
+            use nalgebra::Point2;
+            use ncollide2d::query::Ray;
 
             let direction = Vector2::new(aim.aiming_toward.0, aim.aiming_toward.1).normalize();
             // FIXME: Find the proper trait for direction.is_zero()
-            if direction == nalgebra::zero() {
+            if direction == zero() {
                 continue;
             }
 
-            if let Some(mut physical_object) = self.physical_objects.get(&entity) {
-                let rigid_body = physical_object.body.borrow();
+            let room_entity = self.physical_objects.get(&entity)
+                .and_then(|physical_object| Some(physical_object.room_entity));
+
+            let world = room_entity
+                .and_then(|room_entity| self.physical_rooms.get(&room_entity))
+                .and_then(|room| Some(&room.world));
+
+            if let (Some(room_entity), Some(world)) = (room_entity, world) {
                 let source = Point2::new(position.x, position.y);
                 let ray = Ray::new(source, direction);
-                let mut collision_groups = rigid_body.collision_groups().as_collision_groups();
                 use std::f64::INFINITY;
 
                 aim.aiming_at_point = None;
                 aim.aiming_at_entity = None;
                 let mut smallest_time_of_impact = INFINITY;
 
-                for interference in self.world.collision_world().interferences_with_ray(&ray, collision_groups) {
+                for interference in world.collision_world().interferences_with_ray(&ray, &CollisionGroups::new()) {
                     let (collision_object, ray_intersection) = interference;
-                    if let Some(intersected_entity) = collision_object.get_entity() {
-                        if entity != intersected_entity {
+
+                    if let Some(intersected_entity) = self.collision_object_to_entity.get(&(room_entity, collision_object.handle())) {
+                        if entity != *intersected_entity {
                             let intersection_point = source + direction * ray_intersection.toi;
 
                             if smallest_time_of_impact > ray_intersection.toi {
                                 smallest_time_of_impact = ray_intersection.toi;
 
                                 aim.aiming_at_point = Some((intersection_point.x, intersection_point.y));
-                                aim.aiming_at_entity = Some(intersected_entity);
+                                aim.aiming_at_entity = Some(*intersected_entity);
                             }
                         }
                     }
@@ -344,72 +441,116 @@ impl<'a> System<'a> for PhysicsSystem {
         }
 
         for (entity, force) in (&*entities, &forces).join() {
-            if let Some(mut physical_object) = self.physical_objects.get(&entity) {
-                let force = Vector2::new(force.x, force.y);
-                let mut rigid_body = physical_object.body.borrow_mut();
-                rigid_body.clear_forces();
-                rigid_body.append_lin_force(force);
+            if let Some(rigid_body) = self.get_rigid_body(&entity) {
+                let continuous_force = Vector2::new(force.continuous.0, force.continuous.1);
+                let impulse_force = Vector2::new(force.impulse.0, force.impulse.1);
+
+                rigid_body.apply_force(&Force2::new(continuous_force, 0.0));
+
+                let velocity = rigid_body.velocity().clone();
+                rigid_body.set_velocity(velocity + Velocity2::new(impulse_force, 0.0));
+                //rigid_body.apply_displacement(&Velocity2::new(impulse_force, 0.0));
+            }
+        }
+
+        for (entity, revolute_joint, in_room) in (&*entities, &revolute_joints, &in_rooms).join() {
+            let target_will_be_destroyed = destroy_entities
+                .get(entities.entity(revolute_joint.linked_to_entity))
+                .is_some();
+
+            if target_will_be_destroyed {
+                let world = self.physical_rooms
+                    .get_mut(&entities.entity(in_room.room_entity))
+                    .and_then(|room| Some(&mut room.world));
+
+                let constraint = self.physical_constraints.remove(&entity);
+
+                if let (Some(world), Some(constraint)) = (world, constraint) {
+                    world.remove_constraint(constraint.revolute_constraint_handle);
+                }
             }
         }
 
         for (entity, _destroy_entity, _in_room) in (&*entities, &destroy_entities, &in_rooms).join() {
             if let Some(physical_object) = self.physical_objects.remove(&entity) {
-                self.world.remove_rigid_body(&physical_object.body);
+                self.collision_object_to_entity.remove(&(physical_object.room_entity, physical_object.collision_object_handle));
+
+                let world = self.physical_rooms
+                    .get_mut(&physical_object.room_entity)
+                    .and_then(|room| Some(&mut room.world));
+
+                if let Some(world) = world {
+                    if let Some(physical_constraint) = self.physical_constraints.remove(&entity) {
+                        world.remove_constraint(physical_constraint.revolute_constraint_handle);
+                    }
+
+                    world.remove_bodies(&[physical_object.body_handle]);
+                } else {
+                    eprintln!("Could not find object's physical world");
+                    // FIXME: better error reporting
+                }
+
                 // println!("Destroyed object {:?}", entity);
             }
         }
 
         for (entity, _destroy_entity, _room) in (&*entities, &destroy_entities, &rooms).join() {
             if let Some(physical_room) = self.physical_rooms.remove(&entity) {
-                for wall in physical_room.walls.iter() {
-                    self.world.remove_rigid_body(wall);
+                for collision_object_handle in physical_room.walls.iter() {
+                    self.collision_object_to_entity.remove(&(entity, *collision_object_handle));
                 }
-                println!("Destroyed room {:?}", entity);
             }
+
+            println!("Destroyed room {:?}", entity);
             // FIXME: destroy objects in the room too
         }
 
         for (entity, _destroy_entity, _revolute_joint) in (&*entities, &destroy_entities, &revolute_joints).join() {
-            if let Some(physical_joint) = self.physical_joints.remove(&entity) {
-                self.world.remove_ball_in_socket(&physical_joint.revolute_joint_handle);
+            if let Some(physical_constraint) = self.physical_constraints.remove(&entity) {
+                if let Some(world) = self.get_world_mut(&entity) {
+                    world.remove_constraint(physical_constraint.revolute_constraint_handle);
+                }
             }
         }
 
         // Let time flow in the physics world
-        self.world.step(delta_time.dt);
-
-        // Collect collisions that happened during the above step
-        let mut constraints = Vec::with_capacity(16);
-        self.world.constraints(&mut constraints);
+        for physical_room in self.physical_rooms.values_mut() {
+            physical_room.world.set_timestep(delta_time.dt);
+            physical_room.world.step();
+        }
 
         for (_entity, mut collision_set) in (&*entities, &mut collision_sets).join() {
             collision_set.colliding = false;
             collision_set.collision_normal = (0.0, 0.0);
         }
 
-        for constraint in constraints {
-            if let Constraint::RBRB(rigid_body1, rigid_body2, mut contact_point) = constraint {
-                let (rigid_body1, rigid_body2) = (rigid_body1.borrow(), rigid_body2.borrow());
-                let (user_data1, user_data2) = (rigid_body1.user_data(), rigid_body2.user_data());
+        for (room_entity, physical_room) in self.physical_rooms.iter_mut() {
+            for (collision_object1, collision_object2, contact_manifold) in physical_room.world.collision_world().contact_manifolds() {
+                let entity1 = self.collision_object_to_entity.get(&(*room_entity, collision_object1.handle()));
+                let entity2 = self.collision_object_to_entity.get(&(*room_entity, collision_object2.handle()));
 
-                if let (Some(box1), Some(box2)) = (user_data1, user_data2) {
-                    if let (Some(entity1), Some(entity2)) = (box1.downcast_ref::<Entity>(), box2.downcast_ref::<Entity>()) {
-                        if let Some(mut collision_set) = collision_sets.get_mut(*entity1) {
-                            collision_set.colliding = true;
-                            let (x, y) = collision_set.collision_normal;
-                            collision_set.collision_normal = (x + contact_point.normal.x, y + contact_point.normal.y);
-                        }
-                        if let Some(mut collision_set) = collision_sets.get_mut(*entity2) {
-                            collision_set.colliding = true;
-                            contact_point.flip();
-                            let (x, y) = collision_set.collision_normal;
-                            collision_set.collision_normal = (x + contact_point.normal.x, y + contact_point.normal.y);
-                        }
+                if let Some(collision_set) = entity1.and_then(|entity| collision_sets.get_mut(*entity)) {
+                    for tracked_contact in contact_manifold.contacts() {
+                        let normal = tracked_contact.contact.normal;
+
+                        let (x, y) = collision_set.collision_normal;
+                        collision_set.collision_normal = (x + normal.x, y + normal.y);
+                        collision_set.colliding = true;
                     }
-                } else {
-                    println!("Collision with unregistered body.");
+                }
+
+                if let Some(collision_set) = entity2.and_then(|entity| collision_sets.get_mut(*entity)) {
+                    for tracked_contact in contact_manifold.contacts() {
+                        let normal = -tracked_contact.contact.normal;
+
+                        let (x, y) = collision_set.collision_normal;
+                        collision_set.collision_normal = (x + normal.x, y + normal.y);
+                        collision_set.colliding = true;
+                    }
                 }
             }
+
+            // TODO: Handle cases where a body exists but is not in some of our hashmaps
         }
 
         for (_entity, mut collision_set) in (&*entities, &mut collision_sets).join() {
