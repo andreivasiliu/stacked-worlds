@@ -17,6 +17,7 @@ use nphysics2d::joint::ConstraintHandle;
 use nalgebra::{Vector2, Isometry2, Unit, zero};
 use ncollide2d::shape::Ball;
 use ncollide2d::shape::Plane;
+use ncollide2d::shape::Cuboid;
 use ncollide2d::shape::ShapeHandle;
 use ncollide2d::world::CollisionObjectHandle;
 use ncollide2d::world::CollisionGroups;
@@ -213,6 +214,48 @@ impl<'a> System<'a> for PhysicsSystem {
                     PhysicalRoom {
                         world,
                         walls,
+                    }
+                });
+        }
+
+        // Find static objects in the room, and create terrain out of them
+        // FIXME: Maybe consider using Shape instead of Size
+        for (entity, in_room, position, size, ()) in (&*entities, &in_rooms, &positions, &sizes, !&velocities).join() {
+            let room_entity = entities.entity(in_room.room_entity);
+
+            let physical_room = match self.physical_rooms.get_mut(&room_entity) {
+                Some(physical_room) => physical_room,
+                None => continue,
+            };
+
+            let world = &mut physical_room.world;
+            let collision_object_to_entity = &mut self.collision_object_to_entity;
+
+            self.physical_objects.entry(entity)
+                .or_insert_with(|| {
+                    let position = Vector2::new(position.x, position.y);
+                    let half_extents = Vector2::new(size.width / 2.0, size.height / 2.0);
+
+                    let shape_handle = ShapeHandle::new(Cuboid::new(half_extents));
+                    let body_handle = BodyHandle::ground();
+
+                    let collision_object_handle = world.add_collider(
+                        COLLIDER_MARGIN,
+                        shape_handle,
+                        body_handle,
+                        Isometry2::new(position + half_extents, 0.0),
+                        Material::default(),
+                    );
+
+                    collision_object_to_entity.insert((room_entity, collision_object_handle), entity);
+
+                    println!("Terrain created for {:?}", entity);
+
+                    PhysicalObject {
+                        body_handle,
+                        collision_object_handle,
+                        room_entity,
+                        multibody_parent: None,
                     }
                 });
         }

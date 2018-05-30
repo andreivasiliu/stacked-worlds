@@ -102,6 +102,7 @@ impl Game {
         };
 
         input::InputEventsToState.run_now(&mut self.specs_world.res);
+        input::MouseInsideRoom.run_now(&mut self.specs_world.res);
         input::PlayerControllerInput.run_now(&mut self.specs_world.res);
         input::EditorControllerInput.run_now(&mut self.specs_world.res);
         input::AimObjects.run_now(&mut self.specs_world.res);

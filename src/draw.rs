@@ -12,6 +12,7 @@ use control::Jump;
 use physics::Aim;
 use control::ChainLink;
 use input::InputState;
+use physics::Room;
 
 #[derive(Debug, Component, Serialize, Deserialize, Clone, Copy)]
 #[storage(VecStorage)]
@@ -39,10 +40,6 @@ pub struct Shape {
     pub size: f64,
     pub class: ShapeClass,
 }
-
-#[derive(Component, Debug, Serialize, Deserialize, Clone, Copy)]
-#[storage(VecStorage)]
-pub struct Room;
 
 fn rectangle_to_lines(rect: [f64; 4]) -> [[f64; 4]; 4] {
     let x1 = rect[0];
@@ -86,20 +83,29 @@ impl <'a, 'b> System<'a> for DrawRooms<'b> {
         ReadStorage<'a, Position>,
         ReadStorage<'a, Size>,
         ReadStorage<'a, Animation<RoomAnimation>>,
+        ReadStorage<'a, Room>,
+        ReadStorage<'a, InRoom>,
+        ReadExpect<'a, InputState>,
     );
 
-    fn run(&mut self, (entities, positions, sizes, animations): Self::SystemData) {
-        for (_entity, position, size, animation) in (&*entities, &positions, &sizes, &animations).join() {
+    fn run(&mut self, (entities, positions, sizes, animations, rooms, in_rooms, input_state): Self::SystemData) {
+        // Draw room borders
+        for (entity, position, size, animation, _room) in (&*entities, &positions, &sizes, &animations, &rooms).join() {
             if size.width < 5.0 || size.height < 5.0 {
                 continue;
             }
 
             let room_rectangle = [
-                position.x as f64, position.y as f64,
-                size.width as f64, size.height as f64,
+                position.x, position.y,
+                size.width, size.height,
             ];
 
-            let brightness = 0.25 + 0.75 * ((32 - animation.current) as f32 / 32.0);
+            let mut brightness = 0.25 + 0.75 * ((32 - animation.current) as f32 / 32.0);
+
+            if input_state.room_focused == Some(entity) {
+                brightness = brightness.max(0.4);
+            }
+
             let color = [brightness, brightness, brightness, 1.0];
 
             self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
@@ -108,6 +114,32 @@ impl <'a, 'b> System<'a> for DrawRooms<'b> {
 //                rectangle([0.2, 0.2, 0.5, 0.01], room_rectangle, context.transform, gl);
 
                 for l in rectangle_to_lines(room_rectangle).iter() {
+                    line(color, 0.5, *l, context.transform, gl);
+                }
+            });
+        }
+
+        // Draw terrain entities in rooms
+        for (_entity, position, size, animation, in_room) in (&*entities, &positions, &sizes, &animations, &in_rooms).join() {
+            let room_position = match positions.get(entities.entity(in_room.room_entity)) {
+                Some(room_position) => room_position,
+                None => continue,
+            };
+
+            let terrain_rectangle = [
+                room_position.x + position.x, room_position.y + position.y,
+                size.width, size.height,
+            ];
+
+            let brightness = 0.25 + 0.75 * ((32 - animation.current) as f32 / 32.0);
+            let color = [brightness, brightness, brightness, 1.0];
+
+            self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
+                use graphics::{line, rectangle};
+
+                rectangle([0.05, 0.05, 0.05, 1.0], terrain_rectangle, context.transform, gl);
+
+                for l in rectangle_to_lines(terrain_rectangle).iter() {
                     line(color, 0.5, *l, context.transform, gl);
                 }
             });

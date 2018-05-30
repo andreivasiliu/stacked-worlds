@@ -1,11 +1,11 @@
-use specs::prelude::{System, DenseVecStorage, WriteStorage, ReadStorage, WriteExpect, Entities, Join};
+use specs::prelude::{System, Entity, DenseVecStorage, WriteStorage, ReadStorage, ReadExpect, WriteExpect, Entities, Join};
 use std::collections::VecDeque;
 use super::{Button, Key, MouseButton};
 use std::collections::HashSet;
 use std::collections::HashMap;
 use physics::Aim;
-use draw::Position;
-use physics::InRoom;
+use draw::{Position, Size};
+use physics::{InRoom, Room};
 use edit::{EditorController, EditEvent};
 
 pub enum InputEvent {
@@ -44,11 +44,6 @@ pub struct SelectionBox {
 }
 
 impl SelectionBox {
-    /// Return an array of type [f64; 4] with [x1, y1, y1, y2].
-    pub fn to_array(&self) -> [f64; 4] {
-        [self.x1, self.y1, self.x2, self.y2]
-    }
-
     pub fn to_rectangle(&self) -> SelectionRectangle {
         let x1 = self.x1.min(self.x2);
         let y1 = self.y1.min(self.y2);
@@ -116,9 +111,11 @@ pub struct InputState {
     pub button_held: HashSet<Button>,
     pub button_pressed: HashMap<Button, i32>,
     pub mouse: MouseState,
-    pub selected_region: Option<SelectionBox>,
     // Consider adding mouse motion events
+    pub selected_region: Option<SelectionBox>,
     // Consider changing selected_region to a per-event state
+    pub room_focused: Option<Entity>,
+    // Maybe this is not the best resource/module for room_focused
 }
 
 impl InputState {
@@ -128,6 +125,7 @@ impl InputState {
             button_pressed: HashMap::with_capacity(16),
             mouse: MouseState::default(),
             selected_region: None,
+            room_focused: None,
         }
     }
 
@@ -239,40 +237,69 @@ impl <'a> System<'a> for PlayerControllerInput {
     }
 }
 
+pub struct MouseInsideRoom;
+
+// FIXME: Replace with an InputState property computed from Focusable components
+impl <'a> System<'a> for MouseInsideRoom {
+    type SystemData = (
+        Entities<'a>,
+        ReadStorage<'a, Position>,
+        ReadStorage<'a, Size>,
+        ReadStorage<'a, Room>,
+        WriteExpect<'a, InputState>,
+    );
+
+    fn run(&mut self, (entities, positions, sizes, rooms, mut input_state): Self::SystemData) {
+        input_state.room_focused = None;
+
+        for (entity, position, size, _room) in (&*entities, &positions, &sizes, &rooms).join() {
+            // Get the position relative to the room
+            let x = input_state.mouse.position.0 - position.x;
+            let y = input_state.mouse.position.1 - position.y;
+
+            // See if it is inside it
+            if x >= 0.0 && y >= 0.0 && x < size.width && y < size.height {
+                input_state.room_focused = Some(entity);
+            }
+        }
+    }
+}
+
 pub struct EditorControllerInput;
 
 impl <'a> System<'a> for EditorControllerInput {
     type SystemData = (
         WriteExpect<'a, EditorController>,
-        WriteExpect<'a, InputState>,
+        ReadExpect<'a, InputState>,
+        ReadStorage<'a, Position>,
     );
 
-    fn run(&mut self, (mut editor_controller, mut input_state): Self::SystemData) {
+    fn run(&mut self, (mut editor_controller, input_state, positions): Self::SystemData) {
         // FIXME: Loop over a mouse motion event queue instead, to handle cases where multiple
         // boxes are drawn in a single update (e.g. during lag or testing code)
         if let Some(ref selection_box) = input_state.selected_region {
             let rectangle = selection_box.to_rectangle().snap_to_grid(16);
 
-            editor_controller.push_event(EditEvent::CreateRoom {
-                x: rectangle.x,
-                y: rectangle.y,
-                width: rectangle.width,
-                height: rectangle.height,
-            });
+            if let Some(room_entity) = input_state.room_focused {
+                if let Some(Position { x, y }) = positions.get(room_entity) {
+                    // Turn x and y into room-relative positions
+                    editor_controller.push_event(EditEvent::CreateTerrainBox {
+                        x: rectangle.x - x,
+                        y: rectangle.y - y,
+                        width: rectangle.width,
+                        height: rectangle.height,
+                        room_entity,
+                    });
+                }
+            } else {
+                editor_controller.push_event(EditEvent::CreateRoom {
+                    x: rectangle.x,
+                    y: rectangle.y,
+                    width: rectangle.width,
+                    height: rectangle.height,
+                });
+            }
         };
-
-//
-//
-//        if let &Button::Mouse(MouseButton::Left) = args {
-//            let rect = {
-//                let mut mouse_input = self.specs_world
-//                    .write_resource::<MouseInput>();
-//                mouse_input.dragging = false;
-//                mouse_input.selection_rectangle()
-//            };
-//
-//            let (x, y, width, height) = (rect[0], rect[1], rect[2], rect[3]);
-
     }
 }
 
