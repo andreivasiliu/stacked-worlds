@@ -4,7 +4,6 @@ extern crate specs;
 use specs::prelude::{World, VecStorage, ReadStorage, ReadExpect, Join, System, Entities, RunNow};
 use piston::input::RenderArgs;
 use opengl_graphics::GlGraphics;
-use MouseInput;
 use animate::{Animation, RoomAnimation};
 use physics::InRoom;
 use physics::CollisionSet;
@@ -12,6 +11,7 @@ use nalgebra::Vector2;
 use control::Jump;
 use physics::Aim;
 use control::ChainLink;
+use input::InputState;
 
 #[derive(Debug, Component, Serialize, Deserialize, Clone, Copy)]
 #[storage(VecStorage)]
@@ -308,14 +308,14 @@ pub struct DrawSelectionBox<'a> {
 }
 
 impl <'a, 'b> System<'a> for DrawSelectionBox<'b> {
-    type SystemData = ReadExpect<'a, MouseInput>;
+    type SystemData = ReadExpect<'a, InputState>;
 
-    fn run(&mut self, mouse_input: Self::SystemData) {
+    fn run(&mut self, input_state: Self::SystemData) {
         self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
-            if mouse_input.dragging {
+            if let Some(selection_box) = input_state.mouse.selection_box() {
                 use graphics::{rectangle, line};
 
-                let rect = mouse_input.selection_rectangle();
+                let rect = selection_box.to_rectangle().snap_to_grid(16).to_array();
 
                 rectangle([0.25, 1.0, 0.25, 0.01], rect, context.transform, gl);
                 for l in rectangle_to_lines(rect).iter() {

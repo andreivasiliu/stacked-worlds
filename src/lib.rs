@@ -68,6 +68,7 @@ use specs::saveload::U64MarkerAllocator;
 mod draw;
 mod input;
 mod control;
+mod edit;
 mod animate;
 mod physics;
 mod saveload;
@@ -76,40 +77,13 @@ mod error;
 use error::{GameError, Error};
 use draw::run_draw_systems;
 use physics::PhysicsSystem;
-use input::{InputEvents, InputEvent, Motion};
+use input::{InputEvents, InputEvent};
 
 
 struct Game {
     gl: GlGraphics,
     specs_world: World,
     physics_system: PhysicsSystem,
-}
-
-#[derive(Debug, Default)]
-pub struct MouseInput {
-    pub mouse: (f64, f64),
-    pub dragging_source: (f64, f64),
-    pub dragging: bool,
-}
-
-impl MouseInput {
-    pub fn selection_box(&self) -> [f64; 4] {
-        [self.dragging_source.0, self.dragging_source.1, self.mouse.0, self.mouse.1]
-    }
-
-    /// Return an array of type [i32; 4] with [x, y, width, height].
-    pub fn selection_rectangle(&self) -> [f64; 4] {
-//        use f64::{min, max};
-//        use ::std::core::num::Float;
-//        use ::std::num::Float::{min, max};
-
-        let x1 = self.dragging_source.0.min(self.mouse.0);
-        let y1 = self.dragging_source.1.min(self.mouse.1);
-        let x2 = self.dragging_source.0.max(self.mouse.0);
-        let y2 = self.dragging_source.1.max(self.mouse.1);
-
-        [x1, y1, x2 - x1, y2 - y1]
-    }
 }
 
 pub struct UpdateDeltaTime {
@@ -129,10 +103,12 @@ impl Game {
 
         input::InputEventsToState.run_now(&mut self.specs_world.res);
         input::PlayerControllerInput.run_now(&mut self.specs_world.res);
+        input::EditorControllerInput.run_now(&mut self.specs_world.res);
         input::AimObjects.run_now(&mut self.specs_world.res);
         input::GlobalInput.run_now(&mut self.specs_world.res);
 
         control::ControlObjects.run_now(&mut self.specs_world.res);
+        edit::CreateRoom.run_now(&mut self.specs_world.res);
 
         self.specs_world.maintain();
         self.physics_system.run_now(&mut self.specs_world.res);
@@ -151,14 +127,7 @@ impl Game {
         self.specs_world.write_resource::<InputEvents>().events
             .push_back(InputEvent::PressEvent(*args));
 
-        if let &Button::Mouse(MouseButton::Left) = args {
-            let mut mouse_input = self.specs_world
-                .write_resource::<MouseInput>();
-
-            mouse_input.dragging = true;
-            mouse_input.dragging_source = mouse_input.mouse;
-        }
-
+        // FIXME: Move to edit.rs
         if let &Button::Keyboard(Key::R) = args {
             saveload::ResetWorld.run_now(&mut self.specs_world.res);
             self.specs_world.maintain();
@@ -168,74 +137,11 @@ impl Game {
     fn release(&mut self, args: &Button) {
         self.specs_world.write_resource::<InputEvents>().events
             .push_back(InputEvent::ReleaseEvent(*args));
-
-        if let &Button::Mouse(MouseButton::Left) = args {
-            let rect = {
-                let mut mouse_input = self.specs_world
-                    .write_resource::<MouseInput>();
-                mouse_input.dragging = false;
-                mouse_input.selection_rectangle()
-            };
-
-            let (x, y, width, height) = (rect[0], rect[1], rect[2], rect[3]);
-
-            let entity = self.specs_world.create_entity()
-                .with(draw::Position { x, y })
-                .with(draw::Size { width, height })
-                .with(physics::Room)
-                .with(animate::Animation::<animate::RoomAnimation>::new(32))
-                .marked::<U64Marker>()
-                .build();
-
-            self.specs_world.create_entity()
-                .with(draw::Position { x: width / 2.0 + 5.0, y: height / 2.0 + 10.0 })
-                .with(draw::Shape { size: 10.0, class: draw::ShapeClass::Ball })
-                .with(physics::Velocity::default())
-                .with(physics::InRoom { room_entity: entity.id() })
-                .marked::<U64Marker>()
-                .build();
-
-            self.specs_world.create_entity()
-                .with(draw::Position { x: width / 2.0 - 5.0, y: height / 2.0 - 10.0 })
-                .with(draw::Shape { size: 10.0, class: draw::ShapeClass::Ball })
-                .with(physics::Velocity::default())
-                .with(physics::InRoom { room_entity: entity.id() })
-                .marked::<U64Marker>()
-                .build();
-
-            if entity.id() == 0 {
-                self.specs_world.create_entity()
-                    .with(draw::Position { x: width / 2.0, y: 20.0 })
-                    .with(draw::Shape { size: 10.0, class: draw::ShapeClass::Ball })
-                    .with(physics::Velocity::default())
-                    .with(physics::InRoom { room_entity: entity.id() })
-                    .with(input::PlayerController::default())
-                    .with(control::Jump::default())
-                    .with(physics::Force::default())
-                    .with(physics::Aim::default())
-                    .with(physics::CollisionSet::default())
-                    .marked::<U64Marker>()
-                    .build();
-            }
-        }
     }
 
     fn mouse_cursor(&mut self, x: f64, y: f64) {
-        let mut mouse_input = self.specs_world
-            .write_resource::<MouseInput>();
-        mouse_input.mouse = (x, y);
-
-        let motion = Motion {
-            position: (x, y),
-            dragging_from: if mouse_input.dragging {
-                Some(mouse_input.dragging_source)
-            } else {
-                None
-            }
-        };
-
         self.specs_world.write_resource::<InputEvents>().events
-            .push_back(InputEvent::MotionEvent(motion));
+            .push_back(InputEvent::MotionEvent(x, y));
     }
 }
 
@@ -284,10 +190,10 @@ pub fn run() -> Result<(), Error> {
     world.register::<U64Marker>();
 
     world.add_resource(U64MarkerAllocator::new());
-    world.add_resource(MouseInput::default());
     world.add_resource(UpdateDeltaTime { dt: 0.0 });
     world.add_resource(input::InputEvents::new());
     world.add_resource(input::InputState::new());
+    world.add_resource(edit::EditorController::new());
 
     let mut game = Game {
         gl: GlGraphics::new(opengl_version),
