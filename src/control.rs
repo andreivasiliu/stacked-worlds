@@ -117,7 +117,7 @@ impl <'a> System<'a> for FireHook {
                         .with(Velocity { .. *velocity })
                         .with(InRoom { .. *in_room })
                         .with(ChainLink { next_link, creation_animation, .. ChainLink::default() })
-                        .with(RevoluteJoint { linked_to_entity })
+                        .with(RevoluteJoint { linked_to_entity, multibody_link: false })
                         .marked::<U64Marker>()
                         .build();
 
@@ -126,7 +126,7 @@ impl <'a> System<'a> for FireHook {
                     creation_animation += 0.02;
                 }
 
-                lazy_update.insert(entity, RevoluteJoint { linked_to_entity });
+                lazy_update.insert(entity, RevoluteJoint { linked_to_entity, multibody_link: false });
                 lazy_update.insert(entity, ChainLink { next_link: Some(linked_to_entity), .. ChainLink::default() });
 
                 player_controller.hook_established = true;

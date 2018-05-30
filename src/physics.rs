@@ -79,12 +79,14 @@ pub struct CollisionSet {
 #[storage(DenseVecStorage)]
 pub struct RevoluteJoint {
     pub linked_to_entity: Index,
+    pub multibody_link: bool,
 }
 
 struct PhysicalObject {
     body_handle: BodyHandle,
     collision_object_handle: CollisionObjectHandle,
     room_entity: Entity,
+    multibody_parent: Option<Entity>,
 }
 
 /// Internal object for the physics system
@@ -130,18 +132,6 @@ impl PhysicsSystem {
 
         match self.physical_rooms.get_mut(&room_entity) {
             Some(physical_room) => Some(&mut physical_room.world),
-            None => return None,
-        }
-    }
-
-    fn get_world(&self, entity: &Entity) -> Option<&World<f64>> {
-        let room_entity = match self.physical_objects.get(entity) {
-            Some(physical_object) => physical_object.room_entity,
-            None => return None,
-        };
-
-        match self.physical_rooms.get(&room_entity) {
-            Some(physical_room) => Some(&physical_room.world),
             None => return None,
         }
     }
@@ -232,6 +222,27 @@ impl<'a> System<'a> for PhysicsSystem {
             let collision_object_to_entity = &mut self.collision_object_to_entity;
 
             let room_entity = entities.entity(in_room.room_entity);
+
+            let (multibody_parent_handle, multibody_parent_entity) = {
+                if let Some(revolute_joint) = revolute_joints.get(entity) {
+                    if revolute_joint.multibody_link {
+                        let linked_to_entity = entities.entity(revolute_joint.linked_to_entity);
+                        let is_room = self.physical_rooms.contains_key(&linked_to_entity);
+                        (
+                            physical_objects
+                                .get(&linked_to_entity)
+                                .and_then(|object| Some(object.body_handle))
+                                .or_else(|| { if is_room { Some(BodyHandle::ground()) } else { None } }),
+                            Some(linked_to_entity),
+                        )
+                    } else {
+                        (None, None)
+                    }
+                } else {
+                    (None, None)
+                }
+            };
+
             let world = if let Some(physical_room) = self.physical_rooms.get_mut(&room_entity) {
                 &mut physical_room.world
             } else {
@@ -246,18 +257,36 @@ impl<'a> System<'a> for PhysicsSystem {
                     use nphysics2d::volumetric::Volumetric;
 
                     let density = match shape.class {
-                        ShapeClass::ChainLink => 1.0,
+                        ShapeClass::ChainLink => 0.8,
                         ShapeClass::Ball => 1.0,
                     };
 
                     let shape_handle = ShapeHandle::new(Ball::new(shape.size));
 
-                    //let mut body = RigidBody::new(Ball::new(shape.size), density, 0.3, 0.5);
-                    let body_handle = world.add_rigid_body(
-                        Isometry2::new(Vector2::new(position.x, position.y), 0.0),
-                        shape_handle.inertia(density),
-                        shape_handle.center_of_mass()
-                    );
+                    let body_handle = if let Some(parent) = multibody_parent_handle {
+                        use nphysics2d::joint;
+
+                        let linked_body_position = world.body_part(parent).position().translation.vector;
+
+                        println!("Multibody link added for {:?}", entity);
+
+                        world.add_multibody_link(
+                            parent,
+                            joint::RevoluteJoint::new(0.0),
+                            -linked_body_position + Vector2::new(position.x, position.y),
+                            zero(),
+                            shape_handle.inertia(density),
+                            shape_handle.center_of_mass(),
+                        )
+                    } else {
+                        println!("Rigid body added for {:?}", entity);
+
+                        world.add_rigid_body(
+                            Isometry2::new(Vector2::new(position.x, position.y), 0.0),
+                            shape_handle.inertia(density),
+                            shape_handle.center_of_mass(),
+                        )
+                    };
 
                     let collision_object_handle = world.add_collider(
                         COLLIDER_MARGIN,
@@ -269,29 +298,28 @@ impl<'a> System<'a> for PhysicsSystem {
 
                     collision_object_to_entity.insert((room_entity, collision_object_handle), entity);
 
-                    let body = world.rigid_body_mut(body_handle)
-                        .expect("Cannot get reference to object that was just created");
+                    if multibody_parent_handle.is_none() {
+                        let body = world.rigid_body_mut(body_handle)
+                            .expect("Cannot get reference to object that was just created");
 
-                    body.set_linear_velocity(Vector2::new(velocity.x, velocity.y));
-
-                    // FIXME: how do we get its entity? hashmap?
-                    //body.set_user_data(Some(Box::new(entity)));
+                        body.set_linear_velocity(Vector2::new(velocity.x, velocity.y));
+                    }
 
                     PhysicalObject {
                         body_handle,
                         collision_object_handle,
                         room_entity,
+                        multibody_parent: multibody_parent_entity,
                     }
                 });
 
-            let rigid_body = world.rigid_body(physical_object.body_handle)
-                .expect("Cannot get reference to rigid body");;
+            let body = world.body_part(physical_object.body_handle);
 
-            let physical_position = rigid_body.position().translation.vector;
+            let physical_position = body.position().translation.vector;
             position.x = physical_position.x;
             position.y = physical_position.y;
 
-            let physical_velocity = rigid_body.velocity().linear;
+            let physical_velocity = body.velocity().linear;
             velocity.x = physical_velocity.x;
             velocity.y = physical_velocity.y;
         }
@@ -303,6 +331,10 @@ impl<'a> System<'a> for PhysicsSystem {
         }
 
         for (entity, revolute_joint) in (&*entities, &revolute_joints).join() {
+            if revolute_joint.multibody_link {
+                continue;
+            }
+
             fn get_object_or_room_body(system: &PhysicsSystem, entity: &Entity) -> Option<BodyHandle> {
                 if let Some(object) = system.physical_objects.get(entity) {
                     Some(object.body_handle)
@@ -324,13 +356,14 @@ impl<'a> System<'a> for PhysicsSystem {
             }
 
             fn get_body_position(world: &World<f64>, body_handle: BodyHandle) -> Vector2<f64> {
-                use nphysics2d::object::Body;
+//                use nphysics2d::object::Body;
 
-                match world.body(body_handle) {
-                    Body::RigidBody(rigid_body) => rigid_body.position().translation.vector,
-                    Body::Ground(ground) => ground.position().translation.vector,
-                    Body::Multibody(_) => panic!("Attempted to add constraint to a multibody handle"),
-                }
+                world.body_part(body_handle).position().translation.vector
+//                match world.body_part(body_handle) {
+//                    Body::RigidBody(rigid_body) => rigid_body.position().translation.vector,
+//                    Body::Ground(ground) => ground.position().translation.vector,
+//                    Body::Multibody(_) => panic!("Attempted to add constraint to a multibody handle"),
+//                }
             }
 
             let entity2 = entities.entity(revolute_joint.linked_to_entity);
@@ -445,9 +478,25 @@ impl<'a> System<'a> for PhysicsSystem {
                 let continuous_force = Vector2::new(force.continuous.0, force.continuous.1);
                 let impulse_force = Vector2::new(force.impulse.0, force.impulse.1);
 
+                assert!(!continuous_force.x.is_nan());
+                assert!(!continuous_force.y.is_nan());
+
                 rigid_body.apply_force(&Force2::new(continuous_force, 0.0));
 
                 let velocity = rigid_body.velocity().clone();
+                assert!(!velocity.linear.x.is_nan());
+                assert!(!velocity.linear.y.is_nan());
+
+                let impulse_force = if impulse_force.x.is_nan() || impulse_force.y.is_nan() {
+                    println!("NaN eradicated.");
+                    zero()
+                } else {
+                    impulse_force
+                };
+
+                assert!(!impulse_force.x.is_nan());
+                assert!(!impulse_force.y.is_nan());
+
                 rigid_body.set_velocity(velocity + Velocity2::new(impulse_force, 0.0));
                 //rigid_body.apply_displacement(&Velocity2::new(impulse_force, 0.0));
             }
@@ -480,11 +529,15 @@ impl<'a> System<'a> for PhysicsSystem {
                     .and_then(|room| Some(&mut room.world));
 
                 if let Some(world) = world {
-                    if let Some(physical_constraint) = self.physical_constraints.remove(&entity) {
-                        world.remove_constraint(physical_constraint.revolute_constraint_handle);
-                    }
+                    if let Some(_multibody_parent) = physical_object.multibody_parent {
+                        world.remove_multibody_links(&[physical_object.body_handle]);
+                    } else {
+                        if let Some(physical_constraint) = self.physical_constraints.remove(&entity) {
+                            world.remove_constraint(physical_constraint.revolute_constraint_handle);
+                        }
 
-                    world.remove_bodies(&[physical_object.body_handle]);
+                        world.remove_bodies(&[physical_object.body_handle]);
+                    }
                 } else {
                     eprintln!("Could not find object's physical world");
                     // FIXME: better error reporting
