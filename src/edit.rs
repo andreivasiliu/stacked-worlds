@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 
 use input;
 use draw;
+use shift;
 use physics;
 use animate;
 use control;
@@ -66,6 +67,7 @@ fn create_room(
         lazy_update.create_entity(entities)
             .with(draw::Position { x: width / 2.0, y: 20.0 })
             .with(draw::Shape { size: 10.0, class: draw::ShapeClass::Ball })
+            .with(shift::Shifter::default())
             .with(physics::Velocity::default())
             .with(physics::InRoom { room_entity: entity.id() })
             .with(input::PlayerController::default())

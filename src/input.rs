@@ -4,7 +4,7 @@ use super::{Button, Key, MouseButton};
 use std::collections::HashSet;
 use std::collections::HashMap;
 use physics::Aim;
-use draw::{Position, Size};
+use draw::{Position, Size, Camera};
 use physics::{InRoom, Room};
 use edit::{EditorController, EditEvent};
 
@@ -138,6 +138,10 @@ impl InputState {
             return self.button_held.contains(&button);
         }
     }
+
+    pub fn button_pressed(&mut self, button: &Button) -> bool {
+        self.button_pressed.remove(&button).is_some()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +164,7 @@ pub struct PlayerController {
     pub jumping: bool,
     pub hooking: bool,
     pub hook_established: bool,
+    pub shifting: bool,
 }
 
 pub struct InputEventsToState;
@@ -219,6 +224,7 @@ impl <'a> System<'a> for PlayerControllerInput {
         let moving_right = input_state.button_pressed_or_held(&Button::Keyboard(Key::Right)) ||
             input_state.button_pressed_or_held(&Button::Keyboard(Key::D));
         let jumping = input_state.button_pressed_or_held(&Button::Keyboard(Key::Space));
+        let shifting = input_state.button_pressed_or_held(&Button::Keyboard(Key::Z));
 
         let movement = match (moving_left, moving_right) {
             (true, false) => Movement::Left,
@@ -233,6 +239,7 @@ impl <'a> System<'a> for PlayerControllerInput {
             player_controller.moving = movement;
             player_controller.jumping = jumping;
             player_controller.hooking = hooking;
+            player_controller.shifting = shifting;
         }
     }
 }
@@ -270,11 +277,12 @@ pub struct EditorControllerInput;
 impl <'a> System<'a> for EditorControllerInput {
     type SystemData = (
         WriteExpect<'a, EditorController>,
-        ReadExpect<'a, InputState>,
+        WriteExpect<'a, Camera>,
+        WriteExpect<'a, InputState>,
         ReadStorage<'a, Position>,
     );
 
-    fn run(&mut self, (mut editor_controller, input_state, positions): Self::SystemData) {
+    fn run(&mut self, (mut editor_controller, mut camera, mut input_state, positions): Self::SystemData) {
         // FIXME: Loop over a mouse motion event queue instead, to handle cases where multiple
         // boxes are drawn in a single update (e.g. during lag or testing code)
         if let Some(ref selection_box) = input_state.selected_region {
@@ -300,6 +308,11 @@ impl <'a> System<'a> for EditorControllerInput {
                 });
             }
         };
+
+        // FIXME: Maybe move this to its own Camera-specific place?
+        if input_state.button_pressed(&Button::Keyboard(Key::C)) {
+            camera.mode = camera.mode.next_mode();
+        }
     }
 }
 
@@ -309,12 +322,13 @@ impl <'a> System<'a> for AimObjects {
     type SystemData = (
         Entities<'a>,
         WriteExpect<'a, InputState>,
+        ReadExpect<'a, Camera>,
         ReadStorage<'a, Position>,
         ReadStorage<'a, InRoom>,
         WriteStorage<'a, Aim>,
     );
 
-    fn run(&mut self, (entities, mut input_state, positions, in_rooms, mut aims): Self::SystemData) {
+    fn run(&mut self, (entities, mut input_state, camera, positions, in_rooms, mut aims): Self::SystemData) {
         for (_entity, position, in_room, mut aim) in (&*entities, &positions, &in_rooms, &mut aims).join() {
             if input_state.button_pressed_or_held(&Button::Keyboard(Key::LCtrl)) {
                 let room_entity = entities.entity(in_room.room_entity);
@@ -324,7 +338,10 @@ impl <'a> System<'a> for AimObjects {
                     None => continue,
                 };
 
-                let source = (position.x + room_position.x, position.y + room_position.y);
+                let source = (
+                    position.x + room_position.x - camera.x,
+                    position.y + room_position.y - camera.y,
+                );
                 let aim_at = input_state.mouse.position;
 
                 aim.aiming = true;

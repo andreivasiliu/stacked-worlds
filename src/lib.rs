@@ -68,6 +68,7 @@ use specs::saveload::U64MarkerAllocator;
 mod draw;
 mod input;
 mod control;
+mod shift;
 mod edit;
 mod animate;
 mod physics;
@@ -108,8 +109,10 @@ impl Game {
         input::AimObjects.run_now(&mut self.specs_world.res);
         input::GlobalInput.run_now(&mut self.specs_world.res);
 
+        shift::TrackShiftTarget.run_now(&mut self.specs_world.res);
         control::ControlObjects.run_now(&mut self.specs_world.res);
         edit::CreateRoom.run_now(&mut self.specs_world.res);
+        shift::PhaseShift.run_now(&mut self.specs_world.res);
 
         self.specs_world.maintain();
         self.physics_system.run_now(&mut self.specs_world.res);
@@ -117,6 +120,7 @@ impl Game {
         animate::UpdateAnimations.run_now(&mut self.specs_world.res);
         control::UpdateCooldowns.run_now(&mut self.specs_world.res);
         control::FireHook.run_now(&mut self.specs_world.res);
+        shift::StartPhaseShift.run_now(&mut self.specs_world.res);
 
         // Must be left at the end in order to allow every other system to react on destroyed
         // entities.
@@ -180,6 +184,7 @@ pub fn run() -> Result<(), Error> {
     world.register::<draw::Position>();
     world.register::<draw::Size>();
     world.register::<draw::Shape>();
+    world.register::<shift::Shifter>();
     world.register::<animate::Animation<animate::RoomAnimation>>();
     world.register::<physics::Velocity>();
     world.register::<physics::Force>();
@@ -195,6 +200,7 @@ pub fn run() -> Result<(), Error> {
     world.add_resource(input::InputEvents::new());
     world.add_resource(input::InputState::new());
     world.add_resource(edit::EditorController::new());
+    world.add_resource(draw::Camera::new());
 
     let mut game = Game {
         gl: GlGraphics::new(opengl_version),

@@ -3,6 +3,7 @@ extern crate specs;
 
 use specs::prelude::{World, VecStorage, ReadStorage, ReadExpect, Join, System, Entities, RunNow};
 use piston::input::RenderArgs;
+use graphics::Context;
 use opengl_graphics::GlGraphics;
 use animate::{Animation, RoomAnimation};
 use physics::InRoom;
@@ -13,6 +14,9 @@ use physics::Aim;
 use control::ChainLink;
 use input::InputState;
 use physics::Room;
+use specs::WriteExpect;
+use input::PlayerController;
+use UpdateDeltaTime;
 
 #[derive(Debug, Component, Serialize, Deserialize, Clone, Copy)]
 #[storage(VecStorage)]
@@ -39,6 +43,56 @@ pub enum ShapeClass {
 pub struct Shape {
     pub size: f64,
     pub class: ShapeClass,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+pub struct Camera {
+    pub x: f64,
+    pub y: f64,
+    pub zoom: f64,
+
+    pub target_x: f64,
+    pub target_y: f64,
+    pub target_zoom: f64,
+
+    pub mode: CameraMode,
+}
+
+impl Camera {
+    pub fn new() -> Self {
+        Camera {
+            x: 0.0,
+            y: 0.0,
+            zoom: 1.0,
+
+            target_x: 0.0,
+            target_y: 0.0,
+            target_zoom: 1.0,
+
+            mode: CameraMode::EditorMode,
+        }
+    }
+
+    pub fn apply_transform(self, context: Context) -> Context {
+        use graphics::Transformed;
+
+        context.trans(-self.x, -self.y)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub enum CameraMode {
+    Normal,
+    EditorMode,
+}
+
+impl CameraMode {
+    pub fn next_mode(&self) -> Self {
+        match *self {
+            CameraMode::Normal => CameraMode::EditorMode,
+            CameraMode::EditorMode => CameraMode::Normal,
+        }
+    }
 }
 
 fn rectangle_to_lines(rect: [f64; 4]) -> [[f64; 4]; 4] {
@@ -86,9 +140,10 @@ impl <'a, 'b> System<'a> for DrawRooms<'b> {
         ReadStorage<'a, Room>,
         ReadStorage<'a, InRoom>,
         ReadExpect<'a, InputState>,
+        ReadExpect<'a, Camera>,
     );
 
-    fn run(&mut self, (entities, positions, sizes, animations, rooms, in_rooms, input_state): Self::SystemData) {
+    fn run(&mut self, (entities, positions, sizes, animations, rooms, in_rooms, input_state, camera): Self::SystemData) {
         // Draw room borders
         for (entity, position, size, animation, _room) in (&*entities, &positions, &sizes, &animations, &rooms).join() {
             if size.width < 5.0 || size.height < 5.0 {
@@ -100,7 +155,7 @@ impl <'a, 'b> System<'a> for DrawRooms<'b> {
                 size.width, size.height,
             ];
 
-            let mut brightness = 0.25 + 0.75 * ((32 - animation.current) as f32 / 32.0);
+            let mut brightness: f32 = 0.25 + 0.75 * ((32 - animation.current) as f32 / 32.0);
 
             if input_state.room_focused == Some(entity) {
                 brightness = brightness.max(0.4);
@@ -110,6 +165,8 @@ impl <'a, 'b> System<'a> for DrawRooms<'b> {
 
             self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
                 use graphics::line;
+
+                let context = camera.apply_transform(context);
 
 //                rectangle([0.2, 0.2, 0.5, 0.01], room_rectangle, context.transform, gl);
 
@@ -137,6 +194,8 @@ impl <'a, 'b> System<'a> for DrawRooms<'b> {
             self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
                 use graphics::{line, rectangle};
 
+                let context = camera.apply_transform(context);
+
                 rectangle([0.05, 0.05, 0.05, 1.0], terrain_rectangle, context.transform, gl);
 
                 for l in rectangle_to_lines(terrain_rectangle).iter() {
@@ -161,9 +220,10 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
         ReadStorage<'a, CollisionSet>,
         ReadStorage<'a, Jump>,
         ReadStorage<'a, Aim>,
+        ReadExpect<'a, Camera>,
     );
 
-    fn run(&mut self, (entities, positions, shapes, in_rooms, collision_sets, jumps, aims): Self::SystemData) {
+    fn run(&mut self, (entities, positions, shapes, in_rooms, collision_sets, jumps, aims, camera): Self::SystemData) {
         for (_entity, position, shape, in_room) in (&*entities, &positions, &shapes, &in_rooms).join() {
             if shape.class != ShapeClass::Ball {
                 continue
@@ -178,6 +238,8 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
 
             self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
                 use graphics::{Transformed, circle_arc};
+
+                let context = camera.apply_transform(context);
 
                 let size = shape.size;
                 let rect = [position.x - size, position.y - size, size * 2.0, size * 2.0];
@@ -212,6 +274,8 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
             self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
                 use graphics::line;
 
+                let context = camera.apply_transform(context);
+
                 line([0.0, 1.0, 0.0, alpha as f32], 0.5, [x1, y1, x2, y2], context.transform, gl);
             });
         }
@@ -230,6 +294,8 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
 
             self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
                 use graphics::{Transformed, circle_arc};
+
+                let context = camera.apply_transform(context);
 
                 let rect = [position.x - 7.0, position.y - 7.0, 14.0, 14.0];
                 let context = context.trans(room_position.x, room_position.y);
@@ -263,6 +329,8 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
             self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
                 use graphics::line;
 
+                let context = camera.apply_transform(context);
+
                 line([1.0, 0.3, 0.3, 1.0], 0.5,
                      [p1.x, p1.y, p2.x, p2.y], context.transform, gl);
 
@@ -291,9 +359,10 @@ impl <'a, 'b> System<'a> for DrawChainLinks<'b> {
         ReadStorage<'a, Shape>,
         ReadStorage<'a, InRoom>,
         ReadStorage<'a, ChainLink>,
+        ReadExpect<'a, Camera>,
     );
 
-    fn run(&mut self, (entities, positions, shapes, in_rooms, chain_links): Self::SystemData) {
+    fn run(&mut self, (entities, positions, shapes, in_rooms, chain_links, camera): Self::SystemData) {
         for (_entity, position, shape, in_room, chain_link) in (&*entities, &positions, &shapes, &in_rooms, &chain_links).join() {
             if shape.class != ShapeClass::ChainLink {
                 continue;
@@ -308,6 +377,8 @@ impl <'a, 'b> System<'a> for DrawChainLinks<'b> {
 
             self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
                 use graphics::{Transformed, circle_arc};
+
+                let context = camera.apply_transform(context);
 
                 let size = shape.size;
                 let rect = [position.x - size, position.y - size, size * 2.0, size * 2.0];
@@ -340,12 +411,17 @@ pub struct DrawSelectionBox<'a> {
 }
 
 impl <'a, 'b> System<'a> for DrawSelectionBox<'b> {
-    type SystemData = ReadExpect<'a, InputState>;
+    type SystemData = (
+        ReadExpect<'a, InputState>,
+        ReadExpect<'a, Camera>,
+    );
 
-    fn run(&mut self, input_state: Self::SystemData) {
+    fn run(&mut self, (input_state, camera): Self::SystemData) {
         self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
             if let Some(selection_box) = input_state.mouse.selection_box() {
                 use graphics::{rectangle, line};
+
+                let context = camera.apply_transform(context);
 
                 let rect = selection_box.to_rectangle().snap_to_grid(16).to_array();
 
@@ -355,6 +431,70 @@ impl <'a, 'b> System<'a> for DrawSelectionBox<'b> {
                 }
             }
         });
+    }
+}
+
+pub struct SetCameraTarget<'a> {
+    pub gl_graphics: &'a mut GlGraphics,
+    pub render_args: RenderArgs,
+}
+
+impl <'a, 'b> System<'a> for SetCameraTarget<'b> {
+    type SystemData = (
+        Entities<'a>,
+        WriteExpect<'a, Camera>,
+        ReadStorage<'a, Position>,
+        ReadStorage<'a, InRoom>,
+        ReadStorage<'a, PlayerController>,
+    );
+
+    fn run(&mut self, (entities, mut camera, positions, in_rooms, player_controllers): Self::SystemData) {
+        match camera.mode {
+            // Follow the player.
+            CameraMode::Normal => {
+                // Get the first entity that has a PlayerController
+                // FIXME: Maybe add a specific 'focusable' component instead?
+                for (_entity, position, in_room, _player_controller) in (&*entities, &positions, &in_rooms, &player_controllers).join() {
+                    let room_entity = entities.entity(in_room.room_entity);
+
+                    let room_position = match positions.get(room_entity) {
+                        Some(room_position) => room_position,
+                        None => continue,
+                    };
+
+                    let screen_halfwidth = self.render_args.width as f64 / 2.0;
+                    let screen_halfheight = self.render_args.height as f64 / 2.0;
+
+                    camera.target_x = room_position.x + position.x - screen_halfwidth;
+                    camera.target_y = room_position.y + position.y - screen_halfheight;
+                    camera.target_zoom = 2.0;
+
+                    break;
+                }
+            },
+
+            // Static zoomed-out camera.
+            CameraMode::EditorMode => {
+                camera.target_x = 0.0;
+                camera.target_y = 0.0;
+                camera.target_zoom = 1.0;
+            },
+        }
+    }
+}
+
+pub struct UpdateCamera;
+
+impl <'a> System<'a> for UpdateCamera {
+    type SystemData = (
+        WriteExpect<'a, Camera>,
+        ReadExpect<'a, UpdateDeltaTime>,
+    );
+
+    fn run(&mut self, (mut camera, _delta_time): Self::SystemData) {
+        // TODO: Make camera movement slower and based on delta_time
+        camera.x += (camera.target_x - camera.x) * 1.0;
+        camera.y += (camera.target_y - camera.y) * 1.0;
     }
 }
 
@@ -375,4 +515,9 @@ pub fn run_draw_systems(specs_world: &mut World,
 
     DrawSelectionBox { gl_graphics, render_args }
         .run_now(&mut specs_world.res);
+
+    SetCameraTarget { gl_graphics, render_args }
+        .run_now(&mut specs_world.res);
+
+    UpdateCamera.run_now(&mut specs_world.res);
 }
