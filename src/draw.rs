@@ -2,6 +2,7 @@ extern crate opengl_graphics;
 extern crate specs;
 
 use specs::prelude::{World, VecStorage, ReadStorage, ReadExpect, Join, System, Entities, RunNow};
+use specs::world::Index;
 use piston::input::RenderArgs;
 use graphics::Context;
 use opengl_graphics::GlGraphics;
@@ -17,6 +18,7 @@ use physics::Room;
 use specs::WriteExpect;
 use input::PlayerController;
 use UpdateDeltaTime;
+use shift::Shifter;
 
 #[derive(Debug, Component, Serialize, Deserialize, Clone, Copy)]
 #[storage(VecStorage)]
@@ -56,6 +58,28 @@ pub struct Camera {
     pub target_zoom: f64,
 
     pub mode: CameraMode,
+
+    pub phase_overlay: Option<PhaseOverlay>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+pub struct PhaseOverlay {
+    pub sphere_center: (f64, f64),
+    pub sphere_size: f64,
+    pub sphere_state: PhaseSphereState,
+    pub source_room: Index,
+    pub target_room: Index,
+    pub target_room_offset: (f64, f64),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+pub enum PhaseSphereState {
+    /// A phase-shift bubble is forming
+    Forming,
+    /// A phase-shift bubble is entered, and expanding to the edges of the screen
+    Expanding,
+    /// A phase-shift bubble has been cancelled, and is retracting
+    Retracting,
 }
 
 impl Camera {
@@ -70,13 +94,102 @@ impl Camera {
             target_zoom: 1.0,
 
             mode: CameraMode::EditorMode,
+
+            phase_overlay: None,
         }
     }
 
-    pub fn apply_transform(self, context: Context) -> Context {
+    pub fn apply_stencil(self, gl: &mut GlGraphics, mut context: Context, phase_overlay: &PhaseOverlay, offset: bool) -> Context {
+        use graphics::Transformed;
+        use graphics::Graphics;
+        use graphics::draw_state::DrawState;
+        use graphics::ellipse::Ellipse;
+
+        gl.clear_stencil(0);
+
+        // Draw on stencil buffer
+        context.draw_state = DrawState::new_clip();
+
+        let half_size = 200.0 * phase_overlay.sphere_size;
+
+        let rect = [-half_size, -half_size, half_size * 2.0, half_size * 2.0];
+
+        let sphere_context = context
+            .trans(phase_overlay.sphere_center.0, phase_overlay.sphere_center.1);
+
+        let sphere_context = if offset {
+            sphere_context.trans(phase_overlay.target_room_offset.0, phase_overlay.target_room_offset.1)
+        } else {
+            sphere_context
+        };
+
+        Ellipse::new([1.0, 1.0, 1.0, 1.0]).draw(rect, &sphere_context.draw_state, sphere_context.transform, gl);
+
+        // Apply stencil
+        context.draw_state = DrawState::new_inside();
+        context
+    }
+
+    // Modifies the context according to the camera's coordinates
+    // On 'Normal' camera mode, helps draw the target room during a phase shift overlay
+    //
+    // Forming:
+    //   Source room:
+    //     - full alpha (static)
+    //     - no stencil
+    //   Target room:
+    //     - semi alpha (static, 0.5)
+    //     - inside stencil
+    //     - camera offset
+    //
+    // Expanding:
+    //   Source room:
+    //     - semi alpha (dynamic, 0.5 to 1.0)
+    //     - inside stencil
+    //   Target room:
+    //     - no stencil
+    //     - semi alpha (dynamic, 1.0 to 0.0)
+    //     - camera offset
+
+    pub fn apply_transform(self, gl: &mut GlGraphics, context: Context, room: Option<Index>) -> (Context, f32) {
         use graphics::Transformed;
 
-        context.trans(-self.x, -self.y)
+        let context = context.trans(-self.x, -self.y);
+
+        // Overlay the target room when shifting/sensing
+        if let Some(room) = room {
+            if let Camera { phase_overlay: Some(phase_overlay), mode: CameraMode::Normal, .. } = self {
+                let expanding = phase_overlay.sphere_state == PhaseSphereState::Expanding;
+
+                return if phase_overlay.target_room == room {
+                    // Draw the target room on top of the current one
+                    let context = context.trans(
+                        -phase_overlay.target_room_offset.0,
+                        -phase_overlay.target_room_offset.1,
+                    );
+
+                    if expanding {
+                        (context, 1.0 - phase_overlay.sphere_size as f32 / 3.0)
+                    } else {
+                        //
+
+                        (self.apply_stencil(gl, context, &phase_overlay, true), 0.5)
+                    }
+                } else if phase_overlay.source_room == room {
+                    if expanding {
+                        let alpha = 0.5 + phase_overlay.sphere_size as f32 / 3.0 / 2.0;
+
+                        (self.apply_stencil(gl, context, &phase_overlay, false), alpha)
+                    } else {
+                        (context, 1.0)
+                    }
+                } else {
+                    (context, 1.0)
+                };
+            }
+        }
+
+        (context, 1.0)
     }
 }
 
@@ -126,6 +239,34 @@ impl <'a, 'b> System<'a> for ClearScreen<'b> {
     }
 }
 
+pub struct DrawPhaseSphere<'a> {
+    pub gl_graphics: &'a mut GlGraphics,
+    pub render_args: RenderArgs,
+}
+
+impl <'a, 'b> System<'a> for DrawPhaseSphere<'b> {
+    type SystemData = ReadExpect<'a, Camera>;
+
+    fn run(&mut self, camera: Self::SystemData) {
+        if let Some(phase_overlay) = camera.phase_overlay {
+            self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
+                use graphics::{Transformed, circle_arc};
+
+                let (context, alpha) = camera.apply_transform(gl, context, None);
+
+                let half_size = 200.0 * phase_overlay.sphere_size;
+                let center = phase_overlay.sphere_center;
+
+                let rect = [-half_size, -half_size, half_size * 2.0, half_size * 2.0];
+                let context = context.trans(center.0, center.1);
+
+                circle_arc([0.7, 1.0, 0.7, alpha], 0.5, 0.0, 1.9999 * ::std::f64::consts::PI,
+                           rect, context.transform, gl);
+            });
+        }
+    }
+}
+
 pub struct DrawRooms<'a> {
     pub gl_graphics: &'a mut GlGraphics,
     pub render_args: RenderArgs,
@@ -161,12 +302,12 @@ impl <'a, 'b> System<'a> for DrawRooms<'b> {
                 brightness = brightness.max(0.4);
             }
 
-            let color = [brightness, brightness, brightness, 1.0];
-
             self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
                 use graphics::line;
 
-                let context = camera.apply_transform(context);
+                let (context, alpha) = camera.apply_transform(gl, context, Some(entity.id()));
+
+                let color = [brightness, brightness, brightness, alpha];
 
 //                rectangle([0.2, 0.2, 0.5, 0.01], room_rectangle, context.transform, gl);
 
@@ -189,17 +330,21 @@ impl <'a, 'b> System<'a> for DrawRooms<'b> {
             ];
 
             let brightness = 0.25 + 0.75 * ((32 - animation.current) as f32 / 32.0);
-            let color = [brightness, brightness, brightness, 1.0];
 
             self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
-                use graphics::{line, rectangle};
+                use graphics::{Rectangle, Line};
 
-                let context = camera.apply_transform(context);
+                let (context, alpha) = camera.apply_transform(gl, context, Some(in_room.room_entity));
 
-                rectangle([0.05, 0.05, 0.05, 1.0], terrain_rectangle, context.transform, gl);
+                //rectangle([0.05, 0.05, 0.05, 1.0], terrain_rectangle, context.transform, gl);
+                Rectangle::new([0.05, 0.05, 0.05, alpha])
+                    .draw(terrain_rectangle, &context.draw_state, context.transform, gl);
+
+                let color = [brightness, brightness, brightness, alpha];
 
                 for l in rectangle_to_lines(terrain_rectangle).iter() {
-                    line(color, 0.5, *l, context.transform, gl);
+                    Line::new(color, 0.5)
+                        .draw(*l, &context.draw_state, context.transform, gl);
                 }
             });
         }
@@ -237,17 +382,16 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
             };
 
             self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
-                use graphics::{Transformed, circle_arc};
+                use graphics::{Transformed, CircleArc};
 
-                let context = camera.apply_transform(context);
+                let (context, alpha) = camera.apply_transform(gl, context, Some(in_room.room_entity));
 
                 let size = shape.size;
                 let rect = [position.x - size, position.y - size, size * 2.0, size * 2.0];
                 let context = context.trans(room_position.x, room_position.y);
 
-                // Why can't I use 2.0 instead of 1.9999? Who knows.
-                circle_arc([0.3, 0.3, 1.0, 1.0], 0.5, 0.0, 1.9999 * ::std::f64::consts::PI,
-                           rect, context.transform, gl);
+                CircleArc::new([0.3, 0.3, 1.0, alpha], 0.5, 0.0, 1.9999 * ::std::f64::consts::PI)
+                    .draw(rect, &context.draw_state, context.transform, gl);
             });
         }
 
@@ -269,14 +413,15 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
             let (x1, y1) = (position.x + room_position.x, position.y + room_position.y);
             let (x2, y2) = (x1 + normal.x * 10.0, y1 + normal.y * 10.0);
 
-            let alpha = (0.2 - collision_set.time_since_collision) / 0.2;
+            let collision_alpha = ((0.2 - collision_set.time_since_collision) / 0.2) as f32;
 
             self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
                 use graphics::line;
 
-                let context = camera.apply_transform(context);
+                let (context, alpha) = camera.apply_transform(gl, context, Some(in_room.room_entity));
 
-                line([0.0, 1.0, 0.0, alpha as f32], 0.5, [x1, y1, x2, y2], context.transform, gl);
+                line([0.0, 1.0, 0.0, collision_alpha * alpha],
+                     0.5, [x1, y1, x2, y2], context.transform, gl);
             });
         }
 
@@ -295,14 +440,14 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
             self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
                 use graphics::{Transformed, circle_arc};
 
-                let context = camera.apply_transform(context);
+                let (context, alpha) = camera.apply_transform(gl, context, Some(in_room.room_entity));
 
                 let rect = [position.x - 7.0, position.y - 7.0, 14.0, 14.0];
                 let context = context.trans(room_position.x, room_position.y);
 
-                let alpha = jump.cooldown / 0.2;
+                let jump_alpha = jump.cooldown as f32 / 0.2;
 
-                circle_arc([0.7, 0.7, 1.0, alpha as f32], 0.5, 0.0, 1.9999 * ::std::f64::consts::PI,
+                circle_arc([0.7, 0.7, 1.0, jump_alpha * alpha], 0.5, 0.0, 1.9999 * ::std::f64::consts::PI,
                            rect, context.transform, gl);
             });
         }
@@ -329,9 +474,9 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
             self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
                 use graphics::line;
 
-                let context = camera.apply_transform(context);
+                let (context, alpha) = camera.apply_transform(gl, context, Some(in_room.room_entity));
 
-                line([1.0, 0.3, 0.3, 1.0], 0.5,
+                line([1.0, 0.3, 0.3, 1.0 * alpha], 0.5,
                      [p1.x, p1.y, p2.x, p2.y], context.transform, gl);
 
                 if let Some(aiming_at_point) = aim.aiming_at_point {
@@ -339,7 +484,7 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
                     let p4 = Vector2::new(aiming_at_point.0 + room_position.x,
                                           aiming_at_point.1 + room_position.y);
 
-                    line([0.5, 0.0, 0.0, 0.3], 0.5,
+                    line([0.5, 0.0, 0.0, 0.3 * alpha], 0.5,
                          [p3.x, p3.y, p4.x, p4.y], context.transform, gl);
                 }
             });
@@ -376,9 +521,9 @@ impl <'a, 'b> System<'a> for DrawChainLinks<'b> {
             };
 
             self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
-                use graphics::{Transformed, circle_arc};
+                use graphics::{Transformed, CircleArc};
 
-                let context = camera.apply_transform(context);
+                let (context, alpha) = camera.apply_transform(gl, context, Some(in_room.room_entity));
 
                 let size = shape.size;
                 let rect = [position.x - size, position.y - size, size * 2.0, size * 2.0];
@@ -397,9 +542,8 @@ impl <'a, 'b> System<'a> for DrawChainLinks<'b> {
                     (0.3 + 5.0 * chain_link.creation_animation as f32).min(1.0)
                 };
 
-                circle_arc([0.3, 0.3, brightness, 1.0],
-                           0.5, 0.0, 1.9999 * ::std::f64::consts::PI,
-                           rect, context.transform, gl);
+                CircleArc::new([0.3, 0.3, brightness, 1.0 * alpha], 0.5, 0.0, 1.9999 * ::std::f64::consts::PI)
+                    .draw(rect, &context.draw_state, context.transform, gl);
             });
         }
     }
@@ -421,9 +565,13 @@ impl <'a, 'b> System<'a> for DrawSelectionBox<'b> {
             if let Some(selection_box) = input_state.mouse.selection_box() {
                 use graphics::{rectangle, line};
 
-                let context = camera.apply_transform(context);
+                let (context, _alpha) = camera.apply_transform(gl, context, None);
 
-                let rect = selection_box.to_rectangle().snap_to_grid(16).to_array();
+                let rect = selection_box
+                    .offset_camera(&camera)
+                    .to_rectangle()
+                    .snap_to_grid(16)
+                    .to_array();
 
                 rectangle([0.25, 1.0, 0.25, 0.01], rect, context.transform, gl);
                 for l in rectangle_to_lines(rect).iter() {
@@ -444,17 +592,19 @@ impl <'a, 'b> System<'a> for SetCameraTarget<'b> {
         Entities<'a>,
         WriteExpect<'a, Camera>,
         ReadStorage<'a, Position>,
+        ReadStorage<'a, Size>,
         ReadStorage<'a, InRoom>,
+        ReadStorage<'a, Shifter>,
         ReadStorage<'a, PlayerController>,
     );
 
-    fn run(&mut self, (entities, mut camera, positions, in_rooms, player_controllers): Self::SystemData) {
+    fn run(&mut self, (entities, mut camera, positions, sizes, in_rooms, shifters, player_controllers): Self::SystemData) {
         match camera.mode {
             // Follow the player.
             CameraMode::Normal => {
                 // Get the first entity that has a PlayerController
                 // FIXME: Maybe add a specific 'focusable' component instead?
-                for (_entity, position, in_room, _player_controller) in (&*entities, &positions, &in_rooms, &player_controllers).join() {
+                for (entity, position, in_room, _player_controller) in (&*entities, &positions, &in_rooms, &player_controllers).join() {
                     let room_entity = entities.entity(in_room.room_entity);
 
                     let room_position = match positions.get(room_entity) {
@@ -462,12 +612,72 @@ impl <'a, 'b> System<'a> for SetCameraTarget<'b> {
                         None => continue,
                     };
 
+                    let room_size = match sizes.get(room_entity) {
+                        Some(room_size) => room_size,
+                        None => continue,
+                    };
+
                     let screen_halfwidth = self.render_args.width as f64 / 2.0;
                     let screen_halfheight = self.render_args.height as f64 / 2.0;
 
-                    camera.target_x = room_position.x + position.x - screen_halfwidth;
                     camera.target_y = room_position.y + position.y - screen_halfheight;
+
+                    camera.target_x = if position.x < screen_halfwidth * 0.8 {
+                        room_position.x + screen_halfwidth * (0.8 - 1.0)
+                    } else if position.x > room_size.width - screen_halfwidth * 0.8 {
+                        room_position.x + room_size.width - screen_halfwidth * (1.8)
+                    } else {
+                        room_position.x + position.x - screen_halfwidth
+                    };
+
+                    camera.target_y = if position.y < screen_halfheight * 0.8 {
+                        room_position.y + screen_halfheight * (0.8 - 1.0)
+                    } else if position.y > room_size.height - screen_halfheight * 0.8 {
+                        room_position.y + room_size.height - screen_halfheight * (1.8)
+                    } else {
+                        room_position.y + position.y - screen_halfheight
+                    };
+
                     camera.target_zoom = 2.0;
+
+                    if let Some(shifter) = shifters.get(entity) {
+                        if shifter.sensing && camera.phase_overlay.is_none() {
+                            if let Some(target_room) = shifter.target_room {
+                                if let Some(target_room_position) = positions.get(entities.entity(target_room)) {
+                                    camera.phase_overlay = Some(PhaseOverlay {
+                                        sphere_center: (room_position.x + position.x, room_position.y + position.y),
+                                        sphere_size: 0.0,
+                                        sphere_state: PhaseSphereState::Forming,
+                                        source_room: room_entity.id(),
+                                        target_room,
+                                        target_room_offset: (
+                                            target_room_position.x - room_position.x,
+                                            target_room_position.y - room_position.y,
+                                        ),
+                                    });
+                                }
+                            }
+                        } else if !shifter.sensing {
+                            if let Some(ref mut phase_overlay) = camera.phase_overlay {
+                                if phase_overlay.sphere_state != PhaseSphereState::Expanding {
+                                    phase_overlay.sphere_state = PhaseSphereState::Expanding;
+                                    // We've now shifted into the target room
+                                    // Switch offsets so that we draw the source room on top of the target room instead
+                                    phase_overlay.sphere_center = (
+                                        phase_overlay.sphere_center.0 + phase_overlay.target_room_offset.0,
+                                        phase_overlay.sphere_center.1 + phase_overlay.target_room_offset.1,
+                                    );
+                                    phase_overlay.target_room_offset = (
+                                        -phase_overlay.target_room_offset.0,
+                                        -phase_overlay.target_room_offset.1,
+                                    );
+
+                                    use std::mem::swap;
+                                    swap(&mut phase_overlay.source_room, &mut phase_overlay.target_room);
+                                }
+                            }
+                        }
+                    }
 
                     break;
                 }
@@ -491,16 +701,62 @@ impl <'a> System<'a> for UpdateCamera {
         ReadExpect<'a, UpdateDeltaTime>,
     );
 
-    fn run(&mut self, (mut camera, _delta_time): Self::SystemData) {
+    fn run(&mut self, (mut camera, delta_time): Self::SystemData) {
         // TODO: Make camera movement slower and based on delta_time
         camera.x += (camera.target_x - camera.x) * 1.0;
         camera.y += (camera.target_y - camera.y) * 1.0;
+
+        let mut disable_overlay = false;
+
+        if let Some(ref mut phase_overlay) = camera.phase_overlay {
+            let size = phase_overlay.sphere_size;
+            let dt = delta_time.dt * 200.0;
+
+            let size = match phase_overlay.sphere_state {
+                PhaseSphereState::Forming => 1.0 - ((1.0 - size) * 0.9_f64.powf(dt)),
+                PhaseSphereState::Expanding => size * 1.05_f64.powf(dt),
+                PhaseSphereState::Retracting => size * 0.5_f64.powf(dt),
+            };
+
+            phase_overlay.sphere_size = match phase_overlay.sphere_state {
+                PhaseSphereState::Forming => {
+                    if size > 0.999 {
+                        1.0
+                    } else {
+                        size
+                    }
+                },
+                PhaseSphereState::Expanding => {
+                    if size > 5.0 {
+                        disable_overlay = true;
+                    }
+                    size
+                },
+                PhaseSphereState::Retracting => {
+                    if size < 0.001 {
+                        disable_overlay = true;
+                        0.0
+                    }else {
+                        size
+                    }
+                }
+            };
+        }
+
+        if disable_overlay {
+            camera.phase_overlay = None;
+        }
     }
 }
 
 pub fn run_draw_systems(specs_world: &mut World,
                         gl_graphics: &mut GlGraphics,
                         render_args: RenderArgs) {
+    SetCameraTarget { gl_graphics, render_args }
+        .run_now(&mut specs_world.res);
+
+    UpdateCamera.run_now(&mut specs_world.res);
+
     ClearScreen { gl_graphics, render_args }
         .run_now(&mut specs_world.res);
 
@@ -513,11 +769,9 @@ pub fn run_draw_systems(specs_world: &mut World,
     DrawChainLinks { gl_graphics, render_args }
         .run_now(&mut specs_world.res);
 
+    DrawPhaseSphere { gl_graphics, render_args }
+        .run_now(&mut specs_world.res);
+
     DrawSelectionBox { gl_graphics, render_args }
         .run_now(&mut specs_world.res);
-
-    SetCameraTarget { gl_graphics, render_args }
-        .run_now(&mut specs_world.res);
-
-    UpdateCamera.run_now(&mut specs_world.res);
 }

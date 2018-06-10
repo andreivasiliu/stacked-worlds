@@ -44,6 +44,15 @@ pub struct SelectionBox {
 }
 
 impl SelectionBox {
+    pub fn offset_camera(&self, camera: &Camera) -> Self {
+        SelectionBox {
+            x1: self.x1 + camera.x,
+            y1: self.y1 + camera.y,
+            x2: self.x2 + camera.x,
+            y2: self.y2 + camera.y,
+        }
+    }
+
     pub fn to_rectangle(&self) -> SelectionRectangle {
         let x1 = self.x1.min(self.x2);
         let y1 = self.y1.min(self.y2);
@@ -253,16 +262,17 @@ impl <'a> System<'a> for MouseInsideRoom {
         ReadStorage<'a, Position>,
         ReadStorage<'a, Size>,
         ReadStorage<'a, Room>,
+        ReadExpect<'a, Camera>,
         WriteExpect<'a, InputState>,
     );
 
-    fn run(&mut self, (entities, positions, sizes, rooms, mut input_state): Self::SystemData) {
+    fn run(&mut self, (entities, positions, sizes, rooms, camera, mut input_state): Self::SystemData) {
         input_state.room_focused = None;
 
         for (entity, position, size, _room) in (&*entities, &positions, &sizes, &rooms).join() {
             // Get the position relative to the room
-            let x = input_state.mouse.position.0 - position.x;
-            let y = input_state.mouse.position.1 - position.y;
+            let x = camera.x + input_state.mouse.position.0 - position.x;
+            let y = camera.y + input_state.mouse.position.1 - position.y;
 
             // See if it is inside it
             if x >= 0.0 && y >= 0.0 && x < size.width && y < size.height {
@@ -286,7 +296,10 @@ impl <'a> System<'a> for EditorControllerInput {
         // FIXME: Loop over a mouse motion event queue instead, to handle cases where multiple
         // boxes are drawn in a single update (e.g. during lag or testing code)
         if let Some(ref selection_box) = input_state.selected_region {
-            let rectangle = selection_box.to_rectangle().snap_to_grid(16);
+            let rectangle = selection_box
+                .offset_camera(&camera)
+                .to_rectangle()
+                .snap_to_grid(16);
 
             if let Some(room_entity) = input_state.room_focused {
                 if let Some(Position { x, y }) = positions.get(room_entity) {
