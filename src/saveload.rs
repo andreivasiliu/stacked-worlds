@@ -68,6 +68,7 @@ impl <'a> System<'a> for SaveWorld {
 
 pub struct LoadWorld {
     pub file_name: String,
+    pub default_storage: String,
 }
 
 impl <'a> System<'a> for LoadWorld {
@@ -104,11 +105,13 @@ impl <'a> System<'a> for LoadWorld {
                 Ok(file) => file,
                 Err(error) => {
                     if error.kind() == ::std::io::ErrorKind::NotFound {
-                        eprintln!("Save file ({}) not found, starting empty world.", self.file_name);
+                        eprintln!("Save file '{}' not found, loading from '{}' instead.",
+                                  self.file_name, self.default_storage);
+                        File::open(&self.default_storage)
+                            .expect("Could not open file.")
                     } else {
                         panic!("Could not open save file: {} ({})", self.file_name, error);
                     }
-                    return
                 },
             };
             let mut file_contents = Vec::new();

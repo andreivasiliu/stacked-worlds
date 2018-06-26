@@ -1,0 +1,262 @@
+[
+    EntityData(
+        marker: U64Marker(11262),
+        components: (Some(Position(
+            x: 16,
+            y: 16,
+        )), Some(Size(
+            width: 644,
+            height: 500,
+        )), None, Some(Room), None, None, None, None, None, None, None, None, None, None, Some(Animation(
+            current: 32,
+            limit: 32,
+        ))),
+    ),
+    EntityData(
+        marker: U64Marker(11263),
+        components: (Some(Position(
+            x: 633.8010000000003,
+            y: 489.8009311290943,
+        )), None, Some(Shape(
+            size: 10,
+            class: Ball,
+        )), None, Some(InRoom(
+            room_entity: 0,
+        )), None, Some(Velocity(
+            x: 0,
+            y: 0,
+        )), None, None, None, None, None, None, None, None),
+    ),
+    EntityData(
+        marker: U64Marker(11264),
+        components: (Some(Position(
+            x: 613.6019947394686,
+            y: 489.8010000000001,
+        )), None, Some(Shape(
+            size: 10,
+            class: Ball,
+        )), None, Some(InRoom(
+            room_entity: 0,
+        )), None, Some(Velocity(
+            x: 0,
+            y: 0,
+        )), None, None, None, None, None, None, None, None),
+    ),
+    EntityData(
+        marker: U64Marker(11265),
+        components: (Some(Position(
+            x: 332.3795648026265,
+            y: 489.8010000000001,
+        )), None, Some(Shape(
+            size: 10,
+            class: Ball,
+        )), None, Some(InRoom(
+            room_entity: 4,
+        )), Some(PlayerController(
+            moving: None,
+            jumping: false,
+            hooking: false,
+            hook_established: false,
+            shifting: false,
+        )), Some(Velocity(
+            x: 75.45141474647713,
+            y: 0,
+        )), Some(Force(
+            continuous: (0, 0),
+            impulse: (0, 0),
+        )), Some(Aim(
+            aiming: false,
+            aiming_toward: (-15.822521877160398, -110.66688375907859),
+        )), Some(CollisionSet(
+            colliding: true,
+            collision_normal: (0, 1),
+            last_collision_normal: (0, 1),
+            time_since_collision: 0,
+        )), None, None, Some(Shifter(
+            target_room: Some(0),
+            target_entity: None,
+            shifting: false,
+            sensing: false,
+        )), Some(Jump(
+            cooldown: 0,
+        )), None),
+    ),
+    EntityData(
+        marker: U64Marker(11266),
+        components: (Some(Position(
+            x: 876,
+            y: 16,
+        )), Some(Size(
+            width: 644,
+            height: 500,
+        )), None, Some(Room), None, None, None, None, None, None, None, None, None, None, Some(Animation(
+            current: 32,
+            limit: 32,
+        ))),
+    ),
+    EntityData(
+        marker: U64Marker(11267),
+        components: (Some(Position(
+            x: 631.4220877790199,
+            y: 489.8010000000001,
+        )), None, Some(Shape(
+            size: 10,
+            class: Ball,
+        )), None, Some(InRoom(
+            room_entity: 4,
+        )), None, Some(Velocity(
+            x: -0.14333043756394853,
+            y: 0,
+        )), None, None, None, None, None, None, None, None),
+    ),
+    EntityData(
+        marker: U64Marker(11268),
+        components: (Some(Position(
+            x: 10.199000018449578,
+            y: 489.8010000000001,
+        )), None, Some(Shape(
+            size: 10,
+            class: Ball,
+        )), None, Some(InRoom(
+            room_entity: 4,
+        )), None, Some(Velocity(
+            x: 0,
+            y: 0,
+        )), None, None, None, None, None, None, None, None),
+    ),
+    EntityData(
+        marker: U64Marker(11301),
+        components: (Some(Position(
+            x: 64,
+            y: 176,
+        )), Some(Size(
+            width: 96,
+            height: 64,
+        )), None, None, Some(InRoom(
+            room_entity: 0,
+        )), None, None, None, None, None, None, None, None, None, Some(Animation(
+            current: 32,
+            limit: 32,
+        ))),
+    ),
+    EntityData(
+        marker: U64Marker(11302),
+        components: (Some(Position(
+            x: 320,
+            y: 288,
+        )), Some(Size(
+            width: 176,
+            height: 32,
+        )), None, None, Some(InRoom(
+            room_entity: 0,
+        )), None, None, None, None, None, None, None, None, None, Some(Animation(
+            current: 32,
+            limit: 32,
+        ))),
+    ),
+    EntityData(
+        marker: U64Marker(11303),
+        components: (Some(Position(
+            x: 112,
+            y: 256,
+        )), Some(Size(
+            width: 64,
+            height: 48,
+        )), None, None, Some(InRoom(
+            room_entity: 4,
+        )), None, None, None, None, None, None, None, None, None, Some(Animation(
+            current: 32,
+            limit: 32,
+        ))),
+    ),
+    EntityData(
+        marker: U64Marker(11304),
+        components: (Some(Position(
+            x: 208,
+            y: 224,
+        )), Some(Size(
+            width: 64,
+            height: 48,
+        )), None, None, Some(InRoom(
+            room_entity: 4,
+        )), None, None, None, None, None, None, None, None, None, Some(Animation(
+            current: 32,
+            limit: 32,
+        ))),
+    ),
+    EntityData(
+        marker: U64Marker(11305),
+        components: (Some(Position(
+            x: 320,
+            y: 144,
+        )), Some(Size(
+            width: 64,
+            height: 48,
+        )), None, None, Some(InRoom(
+            room_entity: 4,
+        )), None, None, None, None, None, None, None, None, None, Some(Animation(
+            current: 32,
+            limit: 32,
+        ))),
+    ),
+    EntityData(
+        marker: U64Marker(11306),
+        components: (Some(Position(
+            x: 432,
+            y: 64,
+        )), Some(Size(
+            width: 64,
+            height: 48,
+        )), None, None, Some(InRoom(
+            room_entity: 4,
+        )), None, None, None, None, None, None, None, None, None, Some(Animation(
+            current: 32,
+            limit: 32,
+        ))),
+    ),
+    EntityData(
+        marker: U64Marker(11307),
+        components: (Some(Position(
+            x: 500,
+            y: 272,
+        )), Some(Size(
+            width: 32,
+            height: 144,
+        )), None, None, Some(InRoom(
+            room_entity: 4,
+        )), None, None, None, None, None, None, None, None, None, Some(Animation(
+            current: 32,
+            limit: 32,
+        ))),
+    ),
+    EntityData(
+        marker: U64Marker(11308),
+        components: (Some(Position(
+            x: 384,
+            y: 64,
+        )), Some(Size(
+            width: 64,
+            height: 48,
+        )), None, None, Some(InRoom(
+            room_entity: 0,
+        )), None, None, None, None, None, None, None, None, None, Some(Animation(
+            current: 32,
+            limit: 32,
+        ))),
+    ),
+    EntityData(
+        marker: U64Marker(11309),
+        components: (Some(Position(
+            x: 100,
+            y: 368,
+        )), Some(Size(
+            width: 192,
+            height: 48,
+        )), None, None, Some(InRoom(
+            room_entity: 4,
+        )), None, None, None, None, None, None, None, None, None, Some(Animation(
+            current: 32,
+            limit: 32,
+        ))),
+    ),
+]

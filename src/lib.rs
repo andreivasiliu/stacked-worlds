@@ -125,6 +125,7 @@ impl Game {
 
         // Must be left at the end in order to allow every other system to react on destroyed
         // entities.
+        // FIXME: Obsolete, remove the component and system
         saveload::DestroyEntities.run_now(&mut self.specs_world.res);
         self.specs_world.maintain();
     }
@@ -154,7 +155,7 @@ impl Game {
 pub fn run() -> Result<(), Error> {
     let opengl_version = OpenGL::V3_2;
 
-    let mut window: GlutinWindow = WindowSettings::new("hellopiston", [640, 480])
+    let mut window: GlutinWindow = WindowSettings::new("stacked-worlds", [640, 480])
         .opengl(opengl_version)
         .exit_on_esc(true)
         .build()
@@ -210,7 +211,10 @@ pub fn run() -> Result<(), Error> {
         specs_world: world,
     };
 
-    saveload::LoadWorld { file_name: "storage.ron".into() }.run_now(&mut game.specs_world.res);
+    saveload::LoadWorld {
+        file_name: "storage.ron".into(),
+        default_storage: "default-storage.ron".into(),
+    }.run_now(&mut game.specs_world.res);
 
     let mut events = Events::new(EventSettings::new());
 

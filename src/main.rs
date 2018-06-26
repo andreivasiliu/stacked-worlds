@@ -1,7 +1,7 @@
-extern crate hellopiston;
+extern crate stacked_worlds;
 
 fn main() {
-    hellopiston::run().unwrap_or_else(|err| {
+    stacked_worlds::run().unwrap_or_else(|err| {
        eprintln!("Error: {}", err);
     });
 }

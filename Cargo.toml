@@ -1,20 +1,23 @@
 [package]
-name = "hellopiston"
+name = "stacked-worlds"
 version = "0.1.0"
 authors = ["Andrei Vasiliu <whyte.vuhuni@gmail.com>"]
+repository = "https://github.com/andreivasiliu/stacked-worlds"
+license = "LGPL-3.0"
+readme = "README.md"
 
 [dependencies]
-piston = "*"
-piston2d-graphics = "*"
-pistoncore-glutin_window = "*"
-piston2d-opengl_graphics = "*"
-failure = "*"
-serde_derive = "*"
-serde_json = "*"
-serde = "*"
+piston = "0.36"
+piston2d-graphics = "0.26"
+pistoncore-glutin_window = "0.46"
+piston2d-opengl_graphics = "0.53"
+failure = "0.1"
+serde_derive = "1.0.45"
+serde_json = "1.0.17"
+serde = "1.0.45"
 specs = { version = "0.12", features = ["serde"] }
 specs-derive = "0.2"
-ron = "*"
+ron = "0.2"
 nphysics2d = "0.8"
 nalgebra = "0.14.4"
 ncollide2d = "0.15.3"
