@@ -1,4 +1,5 @@
-use specs::prelude::{System, VecStorage, DenseVecStorage, Entities, ReadExpect, ReadStorage, WriteStorage, Join};
+use specs::prelude::{System, VecStorage, DenseVecStorage, Entities, ReadExpect, ReadStorage, WriteStorage, Join, Builder};
+use specs::saveload::MarkedBuilder;
 use nalgebra::Vector2;
 
 use UpdateDeltaTime;
@@ -23,12 +24,13 @@ impl <'a> System<'a> for ControlObjects {
         Entities<'a>,
         ReadStorage<'a, PlayerController>,
         ReadStorage<'a, CollisionSet>,
+        ReadStorage<'a, Velocity>,
         WriteStorage<'a, Force>,
         WriteStorage<'a, Jump>,
     );
 
-    fn run(&mut self, (entities, player_controller, collision_sets, mut forces, mut jumps): Self::SystemData) {
-        let speed = 100000.0;
+    fn run(&mut self, (entities, player_controller, collision_sets, velocities, mut forces, mut jumps): Self::SystemData) {
+        let speed = 500000.0;
         let jump_speed = 300.0;
 
         for (_entity, mut force) in (&*entities, &mut forces).join() {
@@ -36,11 +38,22 @@ impl <'a> System<'a> for ControlObjects {
             force.impulse = (0.0, 0.0);
         }
 
-        for (_entity, player_controller, mut force) in (&*entities, &player_controller, &mut forces).join() {
+        for (_entity, player_controller, collision_set, velocity, mut force) in (&*entities, &player_controller, &collision_sets, &velocities, &mut forces).join() {
+            // TODO: Change it to only downward collisions
+            let touching_ground = collision_set.time_since_collision < 0.1;
+
+            let speed = if touching_ground { speed } else { speed / 5.0 };
+
             let (x, y) = match player_controller.moving {
-                Movement::Left => (-1.0 * speed, 0.0),
-                Movement::Right => (1.0 * speed, 0.0),
-                Movement::None => (0.0, 0.0),
+                // Move, but only if not exceeding max velocity
+                Movement::Left if velocity.x > -300.0 => (-1.0 * speed, 0.0),
+                Movement::Right if velocity.x < 300.0 => (1.0 * speed, 0.0),
+
+                // Break if not moving
+                Movement::None if touching_ground && velocity.x > 0.0 => (-1.0 * speed, 0.0),
+                Movement::None if touching_ground && velocity.x < 0.0 => (1.0 * speed, 0.0),
+
+                _ => (0.0, 0.0),
             };
 
             force.continuous = (force.continuous.0 + x, force.continuous.1 + y);
@@ -103,6 +116,10 @@ impl <'a> System<'a> for FireHook {
                 let chain_vector = target - source;
                 let direction = chain_vector.normalize();
                 let link_count = (chain_vector / 10.0).norm().floor();
+
+                if link_count > 15.0 {
+                    continue;
+                }
 
                 let mut linked_to_entity = target_entity.id();
                 let mut next_link = None;

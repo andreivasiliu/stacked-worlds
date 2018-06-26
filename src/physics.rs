@@ -10,10 +10,13 @@ use nphysics2d::world::World;
 use nphysics2d::object::RigidBody;
 use nphysics2d::object::BodyHandle;
 use nphysics2d::object::Material;
+use nphysics2d::object::BodySet;
 use nphysics2d::algebra::Force2;
 use nphysics2d::algebra::Velocity2;
 use nphysics2d::joint::RevoluteConstraint;
 use nphysics2d::joint::ConstraintHandle;
+use nphysics2d::force_generator::{ForceGeneratorHandle, ForceGenerator};
+use nphysics2d::solver::IntegrationParameters;
 use nalgebra::{Vector2, Isometry2, Unit, zero};
 use ncollide2d::shape::Ball;
 use ncollide2d::shape::Plane;
@@ -95,6 +98,7 @@ struct PhysicalRoom {
     world: World<f64>,
     walls: [CollisionObjectHandle; 4],
     room_entity: Entity,
+    force_generator: ForceGeneratorHandle,
 
     physical_objects: HashMap<Entity, PhysicalObject>,
     collision_object_to_entity: HashMap<CollisionObjectHandle, Entity>,
@@ -212,12 +216,15 @@ impl<'a> System<'a> for PhysicsSystem {
                         collision_object_to_entity.insert(*collision_object_handle, entity);
                     }
 
+                    let force_generator = world.add_force_generator(CustomForceGenerator::default());
+
                     println!("Created room {:?}", entity);
 
                     PhysicalRoom {
                         world,
                         walls,
                         room_entity: entity,
+                        force_generator,
                         physical_objects: HashMap::new(),
                         physical_constraints: HashMap::new(),
                         collision_object_to_entity,
@@ -348,8 +355,6 @@ impl<'a> System<'a> for PhysicsSystem {
 
                         let linked_body_position = world.body_part(parent).position().translation.vector;
 
-                        println!("Multibody link added for {:?}", entity);
-
                         world.add_multibody_link(
                             parent,
                             joint::RevoluteJoint::new(0.0),
@@ -359,8 +364,6 @@ impl<'a> System<'a> for PhysicsSystem {
                             shape_handle.center_of_mass(),
                         )
                     } else {
-                        println!("Rigid body added for {:?}", entity);
-
                         world.add_rigid_body(
                             Isometry2::new(Vector2::new(position.x, position.y), 0.0),
                             shape_handle.inertia(density),
@@ -552,15 +555,26 @@ impl<'a> System<'a> for PhysicsSystem {
             }
         }
 
+        // FIXME: This whole convoluted block (plus CustomForceGenerator's implementation) was
+        // originally just one single line:
+        // rigid_body.apply_force(&Force2::new(continuous_force, 0.0));
+        // But until https://github.com/sebcrozet/nphysics/issues/107 is fixed we can't use that
+        // FIXME: Handle 'force' component deletion (e.g. by resetting forces to 0 every update)
+        for (entity, in_room, force) in (&*entities, &in_rooms, &forces).join() {
+            if let Some(room) = self.physical_rooms.get_mut(&entities.entity(in_room.room_entity)) {
+                if let Some(physical_object) = room.physical_objects.get(&entity) {
+                    let force_generator = room.world.force_generator_mut(room.force_generator);
+
+                    if let Ok(force_generator) = force_generator.downcast_mut::<CustomForceGenerator>() {
+                        force_generator.bodies.insert(physical_object.body_handle, *force);
+                    }
+                }
+            }
+        }
+
         for (entity, in_room, force) in (&*entities, &in_rooms, &forces).join() {
             if let Some(rigid_body) = self.get_rigid_body(&entity, &entities.entity(in_room.room_entity)) {
-                let continuous_force = Vector2::new(force.continuous.0, force.continuous.1);
                 let impulse_force = Vector2::new(force.impulse.0, force.impulse.1);
-
-                assert!(!continuous_force.x.is_nan());
-                assert!(!continuous_force.y.is_nan());
-
-                rigid_body.apply_force(&Force2::new(continuous_force, 0.0));
 
                 let velocity = rigid_body.velocity().clone();
                 assert!(!velocity.linear.x.is_nan());
@@ -577,7 +591,6 @@ impl<'a> System<'a> for PhysicsSystem {
                 assert!(!impulse_force.y.is_nan());
 
                 rigid_body.set_velocity(velocity + Velocity2::new(impulse_force, 0.0));
-                //rigid_body.apply_displacement(&Velocity2::new(impulse_force, 0.0));
             }
         }
 
@@ -686,6 +699,29 @@ impl<'a> System<'a> for PhysicsSystem {
                 collision_set.time_since_collision += delta_time.dt;
             }
         }
+    }
+}
+
+#[derive(Default)]
+struct CustomForceGenerator {
+    bodies: HashMap<BodyHandle, Force>,
+}
+
+impl ForceGenerator<f64> for CustomForceGenerator {
+    fn apply(&mut self, _: &IntegrationParameters<f64>, bodies: &mut BodySet<f64>) -> bool {
+        self.bodies.retain(|body_handle, force| {
+            if bodies.contains(*body_handle) {
+                let mut part = bodies.body_part_mut(*body_handle);
+                let linear_force = Vector2::new(force.continuous.0, force.continuous.1);
+                part.apply_force(&Force2::new(linear_force, zero()));
+
+                true
+            } else {
+                false
+            }
+        });
+
+        true
     }
 }
 

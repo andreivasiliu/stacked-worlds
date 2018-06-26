@@ -4,7 +4,7 @@ use super::{Button, Key, MouseButton};
 use std::collections::HashSet;
 use std::collections::HashMap;
 use physics::Aim;
-use draw::{Position, Size, Camera};
+use draw::{Position, Size, Camera, Screen};
 use physics::{InRoom, Room};
 use edit::{EditorController, EditEvent};
 
@@ -44,15 +44,6 @@ pub struct SelectionBox {
 }
 
 impl SelectionBox {
-    pub fn offset_camera(&self, camera: &Camera) -> Self {
-        SelectionBox {
-            x1: self.x1 + camera.x,
-            y1: self.y1 + camera.y,
-            x2: self.x2 + camera.x,
-            y2: self.y2 + camera.y,
-        }
-    }
-
     pub fn to_rectangle(&self) -> SelectionRectangle {
         let x1 = self.x1.min(self.x2);
         let y1 = self.y1.min(self.y2);
@@ -119,9 +110,10 @@ impl InputEvents {
 pub struct InputState {
     pub button_held: HashSet<Button>,
     pub button_pressed: HashMap<Button, i32>,
-    pub mouse: MouseState,
+    pub screen_mouse: MouseState,
+    pub world_mouse: MouseState,
     // Consider adding mouse motion events
-    pub selected_region: Option<SelectionBox>,
+    pub selected_world_region: Option<SelectionBox>,
     // Consider changing selected_region to a per-event state
     pub room_focused: Option<Entity>,
     // Maybe this is not the best resource/module for room_focused
@@ -132,8 +124,9 @@ impl InputState {
         InputState {
             button_held: HashSet::with_capacity(16),
             button_pressed: HashMap::with_capacity(16),
-            mouse: MouseState::default(),
-            selected_region: None,
+            screen_mouse: MouseState::default(),
+            world_mouse: MouseState::default(),
+            selected_world_region: None,
             room_focused: None,
         }
     }
@@ -181,12 +174,13 @@ pub struct InputEventsToState;
 impl <'a> System<'a> for InputEventsToState {
     type SystemData = (
         WriteExpect<'a, InputEvents>,
+        ReadExpect<'a, Camera>,
         WriteExpect<'a, InputState>,
     );
 
-    fn run(&mut self, (mut input_events, mut input_state): Self::SystemData) {
+    fn run(&mut self, (mut input_events, camera, mut input_state): Self::SystemData) {
         input_state.button_pressed.clear();
-        input_state.selected_region = None;
+        input_state.selected_world_region = None;
 
         while let Some(input_event) = input_events.events.pop_front() {
             match input_event {
@@ -194,7 +188,8 @@ impl <'a> System<'a> for InputEventsToState {
                     input_state.button_held.insert(button);
 
                     if let Button::Mouse(MouseButton::Left) = button {
-                        input_state.mouse.dragging_from = Some(input_state.mouse.position);
+                        input_state.screen_mouse.dragging_from = Some(input_state.screen_mouse.position);
+                        input_state.world_mouse.dragging_from = Some(input_state.world_mouse.position);
                     }
 
                     let mut press_count = input_state.button_pressed
@@ -206,12 +201,14 @@ impl <'a> System<'a> for InputEventsToState {
                     input_state.button_held.remove(&button);
 
                     if let Button::Mouse(MouseButton::Left) = button {
-                        input_state.selected_region = input_state.mouse.selection_box();
-                        input_state.mouse.dragging_from = None;
+                        input_state.selected_world_region = input_state.world_mouse.selection_box();
+                        input_state.screen_mouse.dragging_from = None;
+                        input_state.world_mouse.dragging_from = None;
                     }
                 },
                 InputEvent::MotionEvent(x, y) => {
-                    input_state.mouse.position = (x, y);
+                    input_state.screen_mouse.position = (x, y);
+                    input_state.world_mouse.position = (x + camera.x, y + camera.y);
                 },
             };
         }
@@ -262,17 +259,16 @@ impl <'a> System<'a> for MouseInsideRoom {
         ReadStorage<'a, Position>,
         ReadStorage<'a, Size>,
         ReadStorage<'a, Room>,
-        ReadExpect<'a, Camera>,
         WriteExpect<'a, InputState>,
     );
 
-    fn run(&mut self, (entities, positions, sizes, rooms, camera, mut input_state): Self::SystemData) {
+    fn run(&mut self, (entities, positions, sizes, rooms, mut input_state): Self::SystemData) {
         input_state.room_focused = None;
 
         for (entity, position, size, _room) in (&*entities, &positions, &sizes, &rooms).join() {
             // Get the position relative to the room
-            let x = camera.x + input_state.mouse.position.0 - position.x;
-            let y = camera.y + input_state.mouse.position.1 - position.y;
+            let x = input_state.world_mouse.position.0 - position.x;
+            let y = input_state.world_mouse.position.1 - position.y;
 
             // See if it is inside it
             if x >= 0.0 && y >= 0.0 && x < size.width && y < size.height {
@@ -295,9 +291,8 @@ impl <'a> System<'a> for EditorControllerInput {
     fn run(&mut self, (mut editor_controller, mut camera, mut input_state, positions): Self::SystemData) {
         // FIXME: Loop over a mouse motion event queue instead, to handle cases where multiple
         // boxes are drawn in a single update (e.g. during lag or testing code)
-        if let Some(ref selection_box) = input_state.selected_region {
+        if let Some(ref selection_box) = input_state.selected_world_region {
             let rectangle = selection_box
-                .offset_camera(&camera)
                 .to_rectangle()
                 .snap_to_grid(16);
 
@@ -335,15 +330,18 @@ impl <'a> System<'a> for AimObjects {
     type SystemData = (
         Entities<'a>,
         WriteExpect<'a, InputState>,
-        ReadExpect<'a, Camera>,
         ReadStorage<'a, Position>,
         ReadStorage<'a, InRoom>,
         WriteStorage<'a, Aim>,
     );
 
-    fn run(&mut self, (entities, mut input_state, camera, positions, in_rooms, mut aims): Self::SystemData) {
+    fn run(&mut self, (entities, mut input_state, positions, in_rooms, mut aims): Self::SystemData) {
         for (_entity, position, in_room, mut aim) in (&*entities, &positions, &in_rooms, &mut aims).join() {
-            if input_state.button_pressed_or_held(&Button::Keyboard(Key::LCtrl)) {
+            // FIXME: Find a better control scheme than holding down Ctrl; but not always-on
+            let _aim_button = input_state.button_pressed_or_held(&Button::Keyboard(Key::LCtrl));
+            let aim_button = true;
+
+            if aim_button {
                 let room_entity = entities.entity(in_room.room_entity);
 
                 let room_position = match positions.get(room_entity) {
@@ -352,10 +350,10 @@ impl <'a> System<'a> for AimObjects {
                 };
 
                 let source = (
-                    position.x + room_position.x - camera.x,
-                    position.y + room_position.y - camera.y,
+                    position.x + room_position.x,
+                    position.y + room_position.y,
                 );
-                let aim_at = input_state.mouse.position;
+                let aim_at = input_state.world_mouse.position;
 
                 aim.aiming = true;
                 aim.aiming_toward = (aim_at.0 - source.0, aim_at.1 - source.1);
@@ -378,3 +376,34 @@ impl <'a> System<'a> for GlobalInput {
     }
 }
 
+pub struct CameraEdgePan;
+
+impl <'a> System<'a> for CameraEdgePan {
+    type SystemData = (
+        WriteExpect<'a, InputState>,
+        ReadExpect<'a, Screen>,
+        WriteExpect<'a, Camera>,
+    );
+
+    fn run(&mut self, (mut input_state, screen, mut camera): Self::SystemData) {
+        let pan_button = input_state.button_pressed_or_held(&Button::Mouse(MouseButton::Middle));
+
+        if pan_button || input_state.screen_mouse.dragging_from.is_some() {
+            let horizontal_direction = match input_state.screen_mouse.position.0 {
+                x if x > screen.width * 0.9 => 1.0,
+                x if x < screen.width * 0.1 => -1.0,
+                _ => 0.0,
+            };
+
+            let vertical_direction = match input_state.screen_mouse.position.1 {
+                y if y > screen.height * 0.9 => 1.0,
+                y if y < screen.height * 0.1 => -1.0,
+                _ => 0.0,
+            };
+
+            camera.panning_direction = Some((horizontal_direction, vertical_direction));
+        } else {
+            camera.panning_direction = None;
+        }
+    }
+}

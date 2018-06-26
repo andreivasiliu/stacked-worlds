@@ -57,9 +57,17 @@ pub struct Camera {
     pub target_y: f64,
     pub target_zoom: f64,
 
+    pub panning_direction: Option<(f64, f64)>,
+
     pub mode: CameraMode,
 
     pub phase_overlay: Option<PhaseOverlay>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq)]
+pub struct Screen {
+    pub width: f64,
+    pub height: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
@@ -93,7 +101,9 @@ impl Camera {
             target_y: 0.0,
             target_zoom: 1.0,
 
-            mode: CameraMode::EditorMode,
+            panning_direction: None,
+
+            mode: CameraMode::Normal,
 
             phase_overlay: None,
         }
@@ -171,8 +181,6 @@ impl Camera {
                     if expanding {
                         (context, 1.0 - phase_overlay.sphere_size as f32 / 3.0)
                     } else {
-                        //
-
                         (self.apply_stencil(gl, context, &phase_overlay, true), 0.5)
                     }
                 } else if phase_overlay.source_room == room {
@@ -486,6 +494,15 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
 
                     line([0.5, 0.0, 0.0, 0.3 * alpha], 0.5,
                          [p3.x, p3.y, p4.x, p4.y], context.transform, gl);
+
+                    if (p4 - position).norm() >= 150.0 {
+                        let p3 = position + direction * 149.0;
+                        let p4 = position + direction * 151.0;
+
+                        line([0.7, 0.7, 0.7, 1.0 * alpha], 1.0,
+                             [p3.x, p3.y, p4.x, p4.y], context.transform, gl);
+                    }
+
                 }
             });
         }
@@ -562,13 +579,12 @@ impl <'a, 'b> System<'a> for DrawSelectionBox<'b> {
 
     fn run(&mut self, (input_state, camera): Self::SystemData) {
         self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
-            if let Some(selection_box) = input_state.mouse.selection_box() {
+            if let Some(selection_box) = input_state.world_mouse.selection_box() {
                 use graphics::{rectangle, line};
 
                 let (context, _alpha) = camera.apply_transform(gl, context, None);
 
                 let rect = selection_box
-                    .offset_camera(&camera)
                     .to_rectangle()
                     .snap_to_grid(16)
                     .to_array();
@@ -599,6 +615,11 @@ impl <'a, 'b> System<'a> for SetCameraTarget<'b> {
     );
 
     fn run(&mut self, (entities, mut camera, positions, sizes, in_rooms, shifters, player_controllers): Self::SystemData) {
+        // Camera panning overrides any other camera targets
+        if camera.panning_direction.is_some() {
+            return;
+        }
+
         match camera.mode {
             // Follow the player.
             CameraMode::Normal => {
@@ -622,21 +643,32 @@ impl <'a, 'b> System<'a> for SetCameraTarget<'b> {
 
                     camera.target_y = room_position.y + position.y - screen_halfheight;
 
-                    camera.target_x = if position.x < screen_halfwidth * 0.8 {
-                        room_position.x + screen_halfwidth * (0.8 - 1.0)
+                    camera.target_x = if room_size.width < screen_halfwidth * 2.0 * 0.8 {
+                        // If the room's width is smaller than the screen, then no camera movement
+                        // is needed.
+                        // The middle of the room should always be at the middle of the screen.
+                        room_size.width / 2.0 - screen_halfwidth
+                    } else if position.x < screen_halfwidth * 0.8 {
+                        // Otherwise, if the player's at the left-side of the room,
+                        // don't focus on the player anymore, stop the camera at this point.
+                        screen_halfwidth * (0.8 - 1.0)
                     } else if position.x > room_size.width - screen_halfwidth * 0.8 {
-                        room_position.x + room_size.width - screen_halfwidth * (1.8)
+                        // Same for right side.
+                        room_size.width - screen_halfwidth * (1.8)
                     } else {
-                        room_position.x + position.x - screen_halfwidth
-                    };
+                        // Otherwise, focus on the player.
+                        position.x - screen_halfwidth
+                    } + room_position.x;
 
-                    camera.target_y = if position.y < screen_halfheight * 0.8 {
-                        room_position.y + screen_halfheight * (0.8 - 1.0)
+                    camera.target_y = if room_size.height < screen_halfheight * 2.0 * 0.8 {
+                        room_size.height / 2.0 - screen_halfheight
+                    } else if position.y < screen_halfheight * 0.8 {
+                        screen_halfheight * (0.8 - 1.0)
                     } else if position.y > room_size.height - screen_halfheight * 0.8 {
-                        room_position.y + room_size.height - screen_halfheight * (1.8)
+                        room_size.height - screen_halfheight * (1.8)
                     } else {
-                        room_position.y + position.y - screen_halfheight
-                    };
+                        position.y - screen_halfheight
+                    } + room_position.y;
 
                     camera.target_zoom = 2.0;
 
@@ -658,6 +690,8 @@ impl <'a, 'b> System<'a> for SetCameraTarget<'b> {
                                 }
                             }
                         } else if !shifter.sensing {
+                            let mut update_camera = None;
+
                             if let Some(ref mut phase_overlay) = camera.phase_overlay {
                                 if phase_overlay.sphere_state != PhaseSphereState::Expanding {
                                     phase_overlay.sphere_state = PhaseSphereState::Expanding;
@@ -667,6 +701,11 @@ impl <'a, 'b> System<'a> for SetCameraTarget<'b> {
                                         phase_overlay.sphere_center.0 + phase_overlay.target_room_offset.0,
                                         phase_overlay.sphere_center.1 + phase_overlay.target_room_offset.1,
                                     );
+
+                                    // Instantly offset the camera, as opposed to setting camera.target_x/y
+                                    // This is to give the illusion that we shifted there
+                                    update_camera = Some(phase_overlay.target_room_offset);
+
                                     phase_overlay.target_room_offset = (
                                         -phase_overlay.target_room_offset.0,
                                         -phase_overlay.target_room_offset.1,
@@ -675,6 +714,11 @@ impl <'a, 'b> System<'a> for SetCameraTarget<'b> {
                                     use std::mem::swap;
                                     swap(&mut phase_overlay.source_room, &mut phase_overlay.target_room);
                                 }
+                            }
+
+                            if let Some(offset) = update_camera {
+                                camera.x += offset.0;
+                                camera.y += offset.1;
                             }
                         }
                     }
@@ -685,8 +729,6 @@ impl <'a, 'b> System<'a> for SetCameraTarget<'b> {
 
             // Static zoomed-out camera.
             CameraMode::EditorMode => {
-                camera.target_x = 0.0;
-                camera.target_y = 0.0;
                 camera.target_zoom = 1.0;
             },
         }
@@ -702,9 +744,14 @@ impl <'a> System<'a> for UpdateCamera {
     );
 
     fn run(&mut self, (mut camera, delta_time): Self::SystemData) {
-        // TODO: Make camera movement slower and based on delta_time
-        camera.x += (camera.target_x - camera.x) * 1.0;
-        camera.y += (camera.target_y - camera.y) * 1.0;
+        // Edge panning is enabled while dragging with the mouse
+        if let Some(panning_direction) = camera.panning_direction {
+            camera.target_x += panning_direction.0 * delta_time.dt * 400.0;
+            camera.target_y += panning_direction.1 * delta_time.dt * 400.0;
+        }
+
+        camera.x += (camera.target_x - camera.x) * 0.9_f64.powf(1.0 / (delta_time.dt * 10.0));
+        camera.y += (camera.target_y - camera.y) * 0.9_f64.powf(1.0 / (delta_time.dt * 10.0));
 
         let mut disable_overlay = false;
 
@@ -749,9 +796,26 @@ impl <'a> System<'a> for UpdateCamera {
     }
 }
 
+pub struct SetScreenSize<'a> {
+    pub gl_graphics: &'a mut GlGraphics,
+    pub render_args: RenderArgs,
+}
+
+impl <'a, 'b> System<'a> for SetScreenSize<'b> {
+    type SystemData = WriteExpect<'a, Screen>;
+
+    fn run(&mut self, mut screen: Self::SystemData) {
+        screen.width = self.render_args.width as f64;
+        screen.height = self.render_args.height as f64;
+    }
+}
+
 pub fn run_draw_systems(specs_world: &mut World,
                         gl_graphics: &mut GlGraphics,
                         render_args: RenderArgs) {
+    SetScreenSize { gl_graphics, render_args }
+        .run_now(&mut specs_world.res);
+
     SetCameraTarget { gl_graphics, render_args }
         .run_now(&mut specs_world.res);
 

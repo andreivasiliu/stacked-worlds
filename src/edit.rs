@@ -1,6 +1,6 @@
-use specs::prelude::{System, Entity, Entities, ReadExpect, WriteExpect, LazyUpdate};
+use specs::prelude::{System, Entity, Entities, ReadExpect, WriteExpect, LazyUpdate, Builder};
 use specs::world::EntitiesRes;
-use specs::saveload::U64Marker;
+use specs::saveload::{U64Marker, MarkedBuilder};
 use std::collections::VecDeque;
 
 use input;

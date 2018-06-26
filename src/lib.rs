@@ -59,7 +59,7 @@ use piston::input::{UpdateEvent, UpdateArgs};
 use piston::input::{RenderEvent, RenderArgs};
 use piston::input::{PressEvent, ReleaseEvent, Key, Button, MouseButton};
 use piston::input::{MouseCursorEvent};
-use piston::window::WindowSettings;
+use piston::window::{WindowSettings, Window};
 use piston::event_loop::{Events, EventSettings};
 use specs::prelude::{World, RunNow};
 use specs::saveload::U64Marker;
@@ -108,6 +108,7 @@ impl Game {
         input::EditorControllerInput.run_now(&mut self.specs_world.res);
         input::AimObjects.run_now(&mut self.specs_world.res);
         input::GlobalInput.run_now(&mut self.specs_world.res);
+        input::CameraEdgePan.run_now(&mut self.specs_world.res);
 
         shift::TrackShiftTarget.run_now(&mut self.specs_world.res);
         control::ControlObjects.run_now(&mut self.specs_world.res);
@@ -201,6 +202,7 @@ pub fn run() -> Result<(), Error> {
     world.add_resource(input::InputState::new());
     world.add_resource(edit::EditorController::new());
     world.add_resource(draw::Camera::new());
+    world.add_resource(draw::Screen { width: window.draw_size().width as f64, height: window.draw_size().height as f64 });
 
     let mut game = Game {
         gl: GlGraphics::new(opengl_version),

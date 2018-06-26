@@ -12,9 +12,9 @@ failure = "*"
 serde_derive = "*"
 serde_json = "*"
 serde = "*"
-specs = { version = "0.11.0-alpha5", features = ["serde"], path = "../specs" }
+specs = { version = "0.12", features = ["serde"] }
 specs-derive = "0.2"
 ron = "*"
-nphysics2d = { version = "0.8", path = "../nphysics/build/nphysics2d" }
+nphysics2d = "0.8"
 nalgebra = "0.14.4"
 ncollide2d = "0.15.3"

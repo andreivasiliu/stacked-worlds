@@ -99,8 +99,18 @@ impl <'a> System<'a> for LoadWorld {
         use ::std::io::Read;
 
         let file_contents = {
-            let mut file = File::open(&self.file_name)
-                .expect("Could not open file.");
+            // FIXME: Replace panic! and expect! with actual error handling/recovery
+            let mut file = match File::open(&self.file_name) {
+                Ok(file) => file,
+                Err(error) => {
+                    if error.kind() == ::std::io::ErrorKind::NotFound {
+                        eprintln!("Save file ({}) not found, starting empty world.", self.file_name);
+                    } else {
+                        panic!("Could not open save file: {} ({})", self.file_name, error);
+                    }
+                    return
+                },
+            };
             let mut file_contents = Vec::new();
             file.read_to_end(&mut file_contents)
                 .expect("Could not read file.");
