@@ -73,12 +73,14 @@ mod edit;
 mod animate;
 mod physics;
 mod saveload;
+mod perfcount;
 mod error;
 
 use error::{GameError, Error};
 use draw::run_draw_systems;
 use physics::PhysicsSystem;
 use input::{InputEvents, InputEvent};
+use perfcount::{PerfCounters, GlobalCounters, Counter};
 
 
 struct Game {
@@ -92,11 +94,26 @@ pub struct UpdateDeltaTime {
 }
 
 impl Game {
+    fn perf_count_enter(&mut self, counter: Counter) {
+        self.specs_world.write_resource::<PerfCounters<GlobalCounters>>().enter(counter);
+    }
+
+    fn perf_count_leave(&mut self, counter: Counter) {
+        self.specs_world.write_resource::<PerfCounters<GlobalCounters>>().leave(counter);
+    }
+
     fn render(&mut self, args: &RenderArgs) {
+        self.perf_count_enter(Counter::WorldDrawDuration);
+
         run_draw_systems(&mut self.specs_world, &mut self.gl, *args);
+
+        self.perf_count_leave(Counter::WorldDrawDuration);
     }
 
     fn update(&mut self, args: &UpdateArgs) {
+        self.perf_count_enter(Counter::WorldUpdateDuration);
+        self.specs_world.write_resource::<PerfCounters<GlobalCounters>>().enter(Counter::WorldUpdateDuration);
+
         let () = {
             let mut update_delta_time = self.specs_world.write_resource::<UpdateDeltaTime>();
             update_delta_time.dt = args.dt;
@@ -128,9 +145,15 @@ impl Game {
         // FIXME: Obsolete, remove the component and system
         saveload::DestroyEntities.run_now(&mut self.specs_world.res);
         self.specs_world.maintain();
+
+        self.perf_count_leave(Counter::WorldUpdateDuration);
+
+        perfcount::setup::MergeCounters.run_now(&mut self.specs_world.res);
     }
 
     fn press(&mut self, args: &Button) {
+        self.perf_count_enter(Counter::WorldInputDuration);
+
         self.specs_world.write_resource::<InputEvents>().events
             .push_back(InputEvent::PressEvent(*args));
 
@@ -139,16 +162,26 @@ impl Game {
             saveload::ResetWorld.run_now(&mut self.specs_world.res);
             self.specs_world.maintain();
         }
+
+        self.perf_count_leave(Counter::WorldInputDuration);
     }
 
     fn release(&mut self, args: &Button) {
+        self.perf_count_enter(Counter::WorldInputDuration);
+
         self.specs_world.write_resource::<InputEvents>().events
             .push_back(InputEvent::ReleaseEvent(*args));
+
+        self.perf_count_leave(Counter::WorldInputDuration);
     }
 
     fn mouse_cursor(&mut self, x: f64, y: f64) {
+        self.perf_count_enter(Counter::WorldInputDuration);
+
         self.specs_world.write_resource::<InputEvents>().events
             .push_back(InputEvent::MotionEvent(x, y));
+
+        self.perf_count_leave(Counter::WorldInputDuration);
     }
 }
 
@@ -204,6 +237,8 @@ pub fn run() -> Result<(), Error> {
     world.add_resource(edit::EditorController::new());
     world.add_resource(draw::Camera::new());
     world.add_resource(draw::Screen { width: window.draw_size().width as f64, height: window.draw_size().height as f64 });
+
+    perfcount::setup::add_resources(&mut world);
 
     let mut game = Game {
         gl: GlGraphics::new(opengl_version),

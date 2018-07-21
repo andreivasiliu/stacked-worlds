@@ -2,7 +2,7 @@ extern crate specs;
 extern crate nphysics2d;
 extern crate ncollide2d;
 
-use specs::prelude::{WriteStorage, ReadStorage, VecStorage, DenseVecStorage, System, Entities, Join};
+use specs::prelude::{WriteStorage, ReadStorage, WriteExpect, VecStorage, DenseVecStorage, System, Entities, Join};
 use specs::world::Index;
 use specs::prelude::Entity;
 use specs::prelude::ReadExpect;
@@ -28,6 +28,7 @@ use std::collections::HashMap;
 
 use saveload::DestroyEntity;
 use draw::{Position, Size, Shape, ShapeClass};
+use perfcount::{PerfCounters, Counter};
 use UpdateDeltaTime;
 
 
@@ -165,10 +166,15 @@ impl<'a> System<'a> for PhysicsSystem {
         ReadStorage<'a, RevoluteJoint>,
         ReadStorage<'a, DestroyEntity>,
         ReadExpect<'a, UpdateDeltaTime>,
+        WriteExpect<'a, PerfCounters<PhysicsSystem>>,
     );
 
     fn run(&mut self, (entities, rooms, in_rooms, sizes, shapes, mut positions, mut velocities,
-        forces, mut aims, mut collision_sets, revolute_joints, destroy_entities, delta_time): Self::SystemData) {
+        forces, mut aims, mut collision_sets, revolute_joints, destroy_entities, delta_time,
+        mut perf_count)
+    : Self::SystemData) {
+        perf_count.enter(Counter::PhysicsSystemDuration);
+
         // Clear the visited flag of all physical objects and joints; after processing entities, all
         // unvisited ones will be deleted
         for room in self.physical_rooms.values_mut() {
@@ -232,6 +238,8 @@ impl<'a> System<'a> for PhysicsSystem {
                 });
         }
 
+        let mut objects_created = 0;
+
         // Find static objects in the room, and create terrain out of them
         // FIXME: Maybe consider using Shape instead of Size
         for (entity, in_room, position, size, ()) in (&*entities, &in_rooms, &positions, &sizes, !&velocities).join() {
@@ -265,6 +273,8 @@ impl<'a> System<'a> for PhysicsSystem {
 
                     println!("Terrain created for {:?}", entity);
 
+                    objects_created += 1;
+
                     PhysicalObject {
                         body_handle,
                         collision_object_handle,
@@ -275,6 +285,8 @@ impl<'a> System<'a> for PhysicsSystem {
 
             physical_object.visited = true;
         }
+
+        perf_count.set(Counter::ObjectsCreated, objects_created as f64);
 
         for (entity, in_room, shape, position, velocity) in (&*entities, &in_rooms, &shapes, &mut positions, &mut velocities).join() {
             let room_entity = entities.entity(in_room.room_entity);
@@ -699,6 +711,8 @@ impl<'a> System<'a> for PhysicsSystem {
                 collision_set.time_since_collision += delta_time.dt;
             }
         }
+
+        perf_count.leave(Counter::PhysicsSystemDuration);
     }
 }
 

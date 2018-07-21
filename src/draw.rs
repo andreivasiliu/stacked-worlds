@@ -19,6 +19,9 @@ use specs::WriteExpect;
 use input::PlayerController;
 use UpdateDeltaTime;
 use shift::Shifter;
+use perfcount::PerfCounterStream;
+use perfcount::Counter;
+use std::time::Duration;
 
 #[derive(Debug, Component, Serialize, Deserialize, Clone, Copy)]
 #[storage(VecStorage)]
@@ -522,6 +525,7 @@ impl <'a, 'b> System<'a> for DrawChainLinks<'b> {
         ReadStorage<'a, InRoom>,
         ReadStorage<'a, ChainLink>,
         ReadExpect<'a, Camera>,
+
     );
 
     fn run(&mut self, (entities, positions, shapes, in_rooms, chain_links, camera): Self::SystemData) {
@@ -592,6 +596,76 @@ impl <'a, 'b> System<'a> for DrawSelectionBox<'b> {
                 rectangle([0.25, 1.0, 0.25, 0.01], rect, context.transform, gl);
                 for l in rectangle_to_lines(rect).iter() {
                     line([0.25, 1.0, 0.25, 1.0], 0.5, *l, context.transform, gl);
+                }
+            }
+        });
+    }
+}
+
+pub struct DrawPerfGraphs<'a> {
+    pub gl_graphics: &'a mut GlGraphics,
+    pub render_args: RenderArgs,
+}
+
+impl <'a, 'b> System<'a> for DrawPerfGraphs<'b> {
+    type SystemData = ReadExpect<'a, PerfCounterStream>;
+
+    fn run(&mut self, perf_counter_stream: Self::SystemData) {
+        let screen_width = self.render_args.width;
+        let screen_height = self.render_args.height;
+
+        self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
+            let counters = &[
+                Counter::WorldDrawDuration,
+                Counter::WorldUpdateDuration,
+            ];
+
+            let alpha = 0.2;
+
+            let colors = [
+                [0.0, 1.0, 0.0, alpha],
+                [1.0, 1.0, 0.0, alpha],
+            ];
+
+            if let Some(graph_extents) = perf_counter_stream.graph_extents(counters, Duration::from_secs(10)) {
+                use graphics::{rectangle, line};
+
+                let width = 200.0;
+                let height = 70.0;
+
+                let rect = [
+                    screen_width as f64 * 0.95 - width,
+                    screen_height as f64 * 0.95 - height,
+                    width,
+                    height,
+                ];
+
+                // Draw the box that houses the graphs
+                rectangle([0.1, 0.05, 0.05, alpha], rect, context.transform, gl);
+                for l in rectangle_to_lines(rect).iter() {
+                    line([0.4, 0.2, 0.2, alpha], 0.5, *l, context.transform, gl);
+                }
+
+                for (counter_index, counter) in counters.iter().enumerate() {
+                    for line_segment in perf_counter_stream.iter_lines_for_counter(*counter) {
+                        let ((instant1, value1), (instant2, value2)) = graph_extents.relative_to_extents(line_segment);
+
+                        if instant1 > 1.0 || instant2 > 1.0 {
+                            break;
+                        }
+
+                        // Leave two pixels for the top/bottom borders
+                        let height = height - 2.0;
+
+                        let l = [
+                            rect[0] + width - instant1 * width,
+                            rect[1] + height - value1 * height + 1.0,
+                            rect[0] + width - instant2 * width,
+                            rect[1] + height - value2 * height + 1.0,
+                        ];
+
+                        line(colors[counter_index], 0.2, l, context.transform, gl);
+                    }
                 }
             }
         });
@@ -837,5 +911,8 @@ pub fn run_draw_systems(specs_world: &mut World,
         .run_now(&mut specs_world.res);
 
     DrawSelectionBox { gl_graphics, render_args }
+        .run_now(&mut specs_world.res);
+
+    DrawPerfGraphs { gl_graphics, render_args }
         .run_now(&mut specs_world.res);
 }
