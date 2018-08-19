@@ -22,6 +22,8 @@ use shift::Shifter;
 use perfcount::PerfCounterStream;
 use perfcount::Counter;
 use std::time::Duration;
+use graphics::{Rectangle, Line, CircleArc, Ellipse};
+use std::collections::VecDeque;
 
 #[derive(Debug, Component, Serialize, Deserialize, Clone, Copy)]
 #[storage(VecStorage)]
@@ -71,6 +73,32 @@ pub struct Camera {
 pub struct Screen {
     pub width: f64,
     pub height: f64,
+}
+
+pub enum DrawablePrimitive {
+    Line(Line),
+    Rectangle(Rectangle),
+    CircleArc(CircleArc),
+    Ellipse(Ellipse),
+}
+
+pub struct DrawableObject {
+    primitive: DrawablePrimitive,
+    rectangle: [f64; 4],
+    context: Context,
+}
+
+pub enum DrawLayer {
+    Background,
+    Center,
+    Foreground,
+
+    _LayerCount,
+}
+
+#[derive(Default)]
+pub struct DrawableQueues {
+    layer: [VecDeque<DrawablePrimitive>; DrawLayer::_LayerCount as usize],
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
@@ -236,6 +264,7 @@ fn rectangle_to_lines(rect: [f64; 4]) -> [[f64; 4]; 4] {
 pub struct ClearScreen<'a> {
     pub gl_graphics: &'a mut GlGraphics,
     pub render_args: RenderArgs,
+    pub context: Context,
 }
 
 impl <'a, 'b> System<'a> for ClearScreen<'b> {
@@ -244,15 +273,14 @@ impl <'a, 'b> System<'a> for ClearScreen<'b> {
     fn run(&mut self, (): Self::SystemData) {
         use graphics::clear;
 
-        self.gl_graphics.draw(self.render_args.viewport(), |_context, gl| {
-            clear([0.0, 0.0, 0.0, 1.0], gl);
-        });
+        clear([0.0, 0.0, 0.0, 1.0], self.gl_graphics);
     }
 }
 
 pub struct DrawPhaseSphere<'a> {
     pub gl_graphics: &'a mut GlGraphics,
     pub render_args: RenderArgs,
+    pub context: Context,
 }
 
 impl <'a, 'b> System<'a> for DrawPhaseSphere<'b> {
@@ -260,20 +288,18 @@ impl <'a, 'b> System<'a> for DrawPhaseSphere<'b> {
 
     fn run(&mut self, camera: Self::SystemData) {
         if let Some(phase_overlay) = camera.phase_overlay {
-            self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
-                use graphics::{Transformed, circle_arc};
+            use graphics::{Transformed, circle_arc};
 
-                let (context, alpha) = camera.apply_transform(gl, context, None);
+            let (context, alpha) = camera.apply_transform(self.gl_graphics, self.context, None);
 
-                let half_size = 200.0 * phase_overlay.sphere_size;
-                let center = phase_overlay.sphere_center;
+            let half_size = 200.0 * phase_overlay.sphere_size;
+            let center = phase_overlay.sphere_center;
 
-                let rect = [-half_size, -half_size, half_size * 2.0, half_size * 2.0];
-                let context = context.trans(center.0, center.1);
+            let rect = [-half_size, -half_size, half_size * 2.0, half_size * 2.0];
+            let context = context.trans(center.0, center.1);
 
-                circle_arc([0.7, 1.0, 0.7, alpha], 0.5, 0.0, 1.9999 * ::std::f64::consts::PI,
-                           rect, context.transform, gl);
-            });
+            circle_arc([0.7, 1.0, 0.7, alpha], 0.5, 0.0, 1.9999 * ::std::f64::consts::PI,
+                       rect, context.transform, self.gl_graphics);
         }
     }
 }
@@ -281,6 +307,7 @@ impl <'a, 'b> System<'a> for DrawPhaseSphere<'b> {
 pub struct DrawRooms<'a> {
     pub gl_graphics: &'a mut GlGraphics,
     pub render_args: RenderArgs,
+    pub context: Context,
 }
 
 impl <'a, 'b> System<'a> for DrawRooms<'b> {
@@ -298,6 +325,8 @@ impl <'a, 'b> System<'a> for DrawRooms<'b> {
     fn run(&mut self, (entities, positions, sizes, animations, rooms, in_rooms, input_state, camera): Self::SystemData) {
         // Draw room borders
         for (entity, position, size, animation, _room) in (&*entities, &positions, &sizes, &animations, &rooms).join() {
+            use graphics::line;
+
             if size.width < 5.0 || size.height < 5.0 {
                 continue;
             }
@@ -313,19 +342,15 @@ impl <'a, 'b> System<'a> for DrawRooms<'b> {
                 brightness = brightness.max(0.4);
             }
 
-            self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
-                use graphics::line;
+            let (context, alpha) = camera.apply_transform(self.gl_graphics, self.context, Some(entity.id()));
 
-                let (context, alpha) = camera.apply_transform(gl, context, Some(entity.id()));
+            let color = [brightness, brightness, brightness, alpha];
 
-                let color = [brightness, brightness, brightness, alpha];
+            // rectangle([0.2, 0.2, 0.5, 0.01], room_rectangle, context.transform, gl);
 
-//                rectangle([0.2, 0.2, 0.5, 0.01], room_rectangle, context.transform, gl);
-
-                for l in rectangle_to_lines(room_rectangle).iter() {
-                    line(color, 0.5, *l, context.transform, gl);
-                }
-            });
+            for l in rectangle_to_lines(room_rectangle).iter() {
+                line(color, 0.5, *l, context.transform, self.gl_graphics);
+            }
         }
 
         // Draw terrain entities in rooms
@@ -342,22 +367,18 @@ impl <'a, 'b> System<'a> for DrawRooms<'b> {
 
             let brightness = 0.25 + 0.75 * ((32 - animation.current) as f32 / 32.0);
 
-            self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
-                use graphics::{Rectangle, Line};
+            let (context, alpha) = camera.apply_transform(self.gl_graphics, self.context, Some(in_room.room_entity));
 
-                let (context, alpha) = camera.apply_transform(gl, context, Some(in_room.room_entity));
+            //rectangle([0.05, 0.05, 0.05, 1.0], terrain_rectangle, context.transform, gl);
+            Rectangle::new([0.05, 0.05, 0.05, alpha])
+                .draw(terrain_rectangle, &context.draw_state, context.transform, self.gl_graphics);
 
-                //rectangle([0.05, 0.05, 0.05, 1.0], terrain_rectangle, context.transform, gl);
-                Rectangle::new([0.05, 0.05, 0.05, alpha])
-                    .draw(terrain_rectangle, &context.draw_state, context.transform, gl);
+            let color = [brightness, brightness, brightness, alpha];
 
-                let color = [brightness, brightness, brightness, alpha];
-
-                for l in rectangle_to_lines(terrain_rectangle).iter() {
-                    Line::new(color, 0.5)
-                        .draw(*l, &context.draw_state, context.transform, gl);
-                }
-            });
+            for line in rectangle_to_lines(terrain_rectangle).iter() {
+                Line::new(color, 0.5)
+                    .draw(*line, &context.draw_state, context.transform, self.gl_graphics);
+            }
         }
     }
 }
@@ -365,6 +386,7 @@ impl <'a, 'b> System<'a> for DrawRooms<'b> {
 pub struct DrawBalls<'a> {
     pub gl_graphics: &'a mut GlGraphics,
     pub render_args: RenderArgs,
+    pub context: Context,
 }
 
 impl <'a, 'b> System<'a> for DrawBalls<'b> {
@@ -381,6 +403,8 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
 
     fn run(&mut self, (entities, positions, shapes, in_rooms, collision_sets, jumps, aims, camera): Self::SystemData) {
         for (_entity, position, shape, in_room) in (&*entities, &positions, &shapes, &in_rooms).join() {
+            use graphics::{Transformed, CircleArc};
+
             if shape.class != ShapeClass::Ball {
                 continue
             }
@@ -392,21 +416,19 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
                 None => continue,
             };
 
-            self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
-                use graphics::{Transformed, CircleArc};
+            let (context, alpha) = camera.apply_transform(self.gl_graphics, self.context, Some(in_room.room_entity));
 
-                let (context, alpha) = camera.apply_transform(gl, context, Some(in_room.room_entity));
+            let size = shape.size;
+            let rect = [position.x - size, position.y - size, size * 2.0, size * 2.0];
+            let context = context.trans(room_position.x, room_position.y);
 
-                let size = shape.size;
-                let rect = [position.x - size, position.y - size, size * 2.0, size * 2.0];
-                let context = context.trans(room_position.x, room_position.y);
-
-                CircleArc::new([0.3, 0.3, 1.0, alpha], 0.5, 0.0, 1.9999 * ::std::f64::consts::PI)
-                    .draw(rect, &context.draw_state, context.transform, gl);
-            });
+            CircleArc::new([0.3, 0.3, 1.0, alpha], 0.5, 0.0, 1.9999 * ::std::f64::consts::PI)
+                .draw(rect, &context.draw_state, context.transform, self.gl_graphics);
         }
 
         for (_entity, position, in_room, collision_set) in (&*entities, &positions, &in_rooms, &collision_sets).join() {
+            use graphics::line;
+
             if collision_set.time_since_collision > 0.2 {
                 continue;
             }
@@ -426,17 +448,15 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
 
             let collision_alpha = ((0.2 - collision_set.time_since_collision) / 0.2) as f32;
 
-            self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
-                use graphics::line;
+            let (context, alpha) = camera.apply_transform(self.gl_graphics, self.context, Some(in_room.room_entity));
 
-                let (context, alpha) = camera.apply_transform(gl, context, Some(in_room.room_entity));
-
-                line([0.0, 1.0, 0.0, collision_alpha * alpha],
-                     0.5, [x1, y1, x2, y2], context.transform, gl);
-            });
+            line([0.0, 1.0, 0.0, collision_alpha * alpha],
+                 0.5, [x1, y1, x2, y2], context.transform, self.gl_graphics);
         }
 
         for (_entity, position, in_room, jump) in (&*entities, &positions, &in_rooms, &jumps).join() {
+            use graphics::{Transformed, circle_arc};
+
             if jump.cooldown <= 0.0 {
                 continue;
             }
@@ -448,23 +468,21 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
                 None => continue,
             };
 
-            self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
-                use graphics::{Transformed, circle_arc};
+            let (context, alpha) = camera.apply_transform(self.gl_graphics, self.context, Some(in_room.room_entity));
 
-                let (context, alpha) = camera.apply_transform(gl, context, Some(in_room.room_entity));
+            let rect = [position.x - 7.0, position.y - 7.0, 14.0, 14.0];
+            let context = context.trans(room_position.x, room_position.y);
 
-                let rect = [position.x - 7.0, position.y - 7.0, 14.0, 14.0];
-                let context = context.trans(room_position.x, room_position.y);
+            let jump_alpha = jump.cooldown as f32 / 0.2;
 
-                let jump_alpha = jump.cooldown as f32 / 0.2;
-
-                circle_arc([0.7, 0.7, 1.0, jump_alpha * alpha], 0.5, 0.0, 1.9999 * ::std::f64::consts::PI,
-                           rect, context.transform, gl);
-            });
+            circle_arc([0.7, 0.7, 1.0, jump_alpha * alpha], 0.5, 0.0, 1.9999 * ::std::f64::consts::PI,
+                       rect, context.transform, self.gl_graphics);
         }
 
         // Draw aiming reticule
         for (_entity, position, in_room, aim) in (&*entities, &positions, &in_rooms, &aims).join() {
+            use graphics::line;
+
             if !aim.aiming {
                 continue;
             }
@@ -482,32 +500,28 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
             let p1 = position + direction * 4.0;
             let p2 = position + direction * 8.0;
 
-            self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
-                use graphics::line;
+            let (context, alpha) = camera.apply_transform(self.gl_graphics, self.context, Some(in_room.room_entity));
 
-                let (context, alpha) = camera.apply_transform(gl, context, Some(in_room.room_entity));
+            line([1.0, 0.3, 0.3, 1.0 * alpha], 0.5,
+                 [p1.x, p1.y, p2.x, p2.y], context.transform, self.gl_graphics);
 
-                line([1.0, 0.3, 0.3, 1.0 * alpha], 0.5,
-                     [p1.x, p1.y, p2.x, p2.y], context.transform, gl);
+            if let Some(aiming_at_point) = aim.aiming_at_point {
+                let p3 = position + direction * 15.0;
+                let p4 = Vector2::new(aiming_at_point.0 + room_position.x,
+                                      aiming_at_point.1 + room_position.y);
 
-                if let Some(aiming_at_point) = aim.aiming_at_point {
-                    let p3 = position + direction * 15.0;
-                    let p4 = Vector2::new(aiming_at_point.0 + room_position.x,
-                                          aiming_at_point.1 + room_position.y);
+                line([0.5, 0.0, 0.0, 0.3 * alpha], 0.5,
+                     [p3.x, p3.y, p4.x, p4.y], context.transform, self.gl_graphics);
 
-                    line([0.5, 0.0, 0.0, 0.3 * alpha], 0.5,
-                         [p3.x, p3.y, p4.x, p4.y], context.transform, gl);
+                if (p4 - position).norm() >= 150.0 {
+                    let p3 = position + direction * 149.0;
+                    let p4 = position + direction * 151.0;
 
-                    if (p4 - position).norm() >= 150.0 {
-                        let p3 = position + direction * 149.0;
-                        let p4 = position + direction * 151.0;
-
-                        line([0.7, 0.7, 0.7, 1.0 * alpha], 1.0,
-                             [p3.x, p3.y, p4.x, p4.y], context.transform, gl);
-                    }
-
+                    line([0.7, 0.7, 0.7, 1.0 * alpha], 1.0,
+                         [p3.x, p3.y, p4.x, p4.y], context.transform, self.gl_graphics);
                 }
-            });
+
+            }
         }
     }
 }
@@ -515,6 +529,7 @@ impl <'a, 'b> System<'a> for DrawBalls<'b> {
 pub struct DrawChainLinks<'a> {
     pub gl_graphics: &'a mut GlGraphics,
     pub render_args: RenderArgs,
+    pub context: Context,
 }
 
 impl <'a, 'b> System<'a> for DrawChainLinks<'b> {
@@ -530,6 +545,8 @@ impl <'a, 'b> System<'a> for DrawChainLinks<'b> {
 
     fn run(&mut self, (entities, positions, shapes, in_rooms, chain_links, camera): Self::SystemData) {
         for (_entity, position, shape, in_room, chain_link) in (&*entities, &positions, &shapes, &in_rooms, &chain_links).join() {
+            use graphics::{Transformed, CircleArc};
+
             if shape.class != ShapeClass::ChainLink {
                 continue;
             }
@@ -541,31 +558,27 @@ impl <'a, 'b> System<'a> for DrawChainLinks<'b> {
                 None => continue,
             };
 
-            self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
-                use graphics::{Transformed, CircleArc};
+            let (context, alpha) = camera.apply_transform(self.gl_graphics, self.context, Some(in_room.room_entity));
 
-                let (context, alpha) = camera.apply_transform(gl, context, Some(in_room.room_entity));
+            let size = shape.size;
+            let rect = [position.x - size, position.y - size, size * 2.0, size * 2.0];
+            let context = context.trans(room_position.x, room_position.y);
+            let animation = chain_link.destruction_animation as f32;
 
-                let size = shape.size;
-                let rect = [position.x - size, position.y - size, size * 2.0, size * 2.0];
-                let context = context.trans(room_position.x, room_position.y);
-                let animation = chain_link.destruction_animation as f32;
-
-                let brightness = if chain_link.expire {
-                    if animation >= 0.2 {
-                        0.3
-                    } else if animation >= 0.1 {
-                        0.3 + 0.7 * (1.0 - (animation / 0.1 - 1.0))
-                    } else {
-                        1.0
-                    }
+            let brightness = if chain_link.expire {
+                if animation >= 0.2 {
+                    0.3
+                } else if animation >= 0.1 {
+                    0.3 + 0.7 * (1.0 - (animation / 0.1 - 1.0))
                 } else {
-                    (0.3 + 5.0 * chain_link.creation_animation as f32).min(1.0)
-                };
+                    1.0
+                }
+            } else {
+                (0.3 + 5.0 * chain_link.creation_animation as f32).min(1.0)
+            };
 
-                CircleArc::new([0.3, 0.3, brightness, 1.0 * alpha], 0.5, 0.0, 1.9999 * ::std::f64::consts::PI)
-                    .draw(rect, &context.draw_state, context.transform, gl);
-            });
+            CircleArc::new([0.3, 0.3, brightness, 1.0 * alpha], 0.5, 0.0, 1.9999 * ::std::f64::consts::PI)
+                .draw(rect, &context.draw_state, context.transform, self.gl_graphics);
         }
     }
 }
@@ -573,6 +586,7 @@ impl <'a, 'b> System<'a> for DrawChainLinks<'b> {
 pub struct DrawSelectionBox<'a> {
     pub gl_graphics: &'a mut GlGraphics,
     pub render_args: RenderArgs,
+    pub context: Context,
 }
 
 impl <'a, 'b> System<'a> for DrawSelectionBox<'b> {
@@ -582,99 +596,101 @@ impl <'a, 'b> System<'a> for DrawSelectionBox<'b> {
     );
 
     fn run(&mut self, (input_state, camera): Self::SystemData) {
-        self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
-            if let Some(selection_box) = input_state.world_mouse.selection_box() {
-                use graphics::{rectangle, line};
+        if let Some(selection_box) = input_state.world_mouse.selection_box() {
+            use graphics::{rectangle, line};
 
-                let (context, _alpha) = camera.apply_transform(gl, context, None);
+            let (context, _alpha) = camera.apply_transform(self.gl_graphics, self.context, None);
 
-                let rect = selection_box
-                    .to_rectangle()
-                    .snap_to_grid(16)
-                    .to_array();
+            let rect = selection_box
+                .to_rectangle()
+                .snap_to_grid(16)
+                .to_array();
 
-                rectangle([0.25, 1.0, 0.25, 0.01], rect, context.transform, gl);
-                for l in rectangle_to_lines(rect).iter() {
-                    line([0.25, 1.0, 0.25, 1.0], 0.5, *l, context.transform, gl);
-                }
+            rectangle([0.25, 1.0, 0.25, 0.01], rect,
+                      context.transform, self.gl_graphics);
+            for l in rectangle_to_lines(rect).iter() {
+                line([0.25, 1.0, 0.25, 1.0], 0.5, *l,
+                     context.transform, self.gl_graphics);
             }
-        });
+        }
     }
 }
 
 pub struct DrawPerfGraphs<'a> {
     pub gl_graphics: &'a mut GlGraphics,
     pub render_args: RenderArgs,
+    pub context: Context,
 }
 
 impl <'a, 'b> System<'a> for DrawPerfGraphs<'b> {
     type SystemData = ReadExpect<'a, PerfCounterStream>;
 
     fn run(&mut self, perf_counter_stream: Self::SystemData) {
+        use graphics::{rectangle, line};
+
         let screen_width = self.render_args.width;
         let screen_height = self.render_args.height;
 
-        self.gl_graphics.draw(self.render_args.viewport(), |context, gl| {
-            let counters = &[
-                Counter::WorldDrawDuration,
-                Counter::WorldUpdateDuration,
+        let counters = &[
+            Counter::WorldDrawDuration,
+            Counter::WorldUpdateDuration,
+        ];
+
+        let alpha = 0.2;
+
+        let colors = [
+            [0.0, 1.0, 0.0, alpha],
+            [1.0, 1.0, 0.0, alpha],
+        ];
+
+        if let Some(graph_extents) = perf_counter_stream.graph_extents(counters, Duration::from_secs(10)) {
+            let width = 200.0;
+            let height = 70.0;
+
+            let rect = [
+                screen_width as f64 * 0.95 - width,
+                screen_height as f64 * 0.95 - height,
+                width,
+                height,
             ];
 
-            let alpha = 0.2;
+            // Draw the box that houses the graphs
+            rectangle([0.1, 0.05, 0.05, alpha], rect, self.context.transform, self.gl_graphics);
+            for l in rectangle_to_lines(rect).iter() {
+                line([0.4, 0.2, 0.2, alpha], 0.5, *l,
+                     self.context.transform, self.gl_graphics);
+            }
 
-            let colors = [
-                [0.0, 1.0, 0.0, alpha],
-                [1.0, 1.0, 0.0, alpha],
-            ];
+            for (counter_index, counter) in counters.iter().enumerate() {
+                for line_segment in perf_counter_stream.iter_lines_for_counter(*counter) {
+                    let ((instant1, value1), (instant2, value2)) = graph_extents.relative_to_extents(line_segment);
 
-            if let Some(graph_extents) = perf_counter_stream.graph_extents(counters, Duration::from_secs(10)) {
-                use graphics::{rectangle, line};
-
-                let width = 200.0;
-                let height = 70.0;
-
-                let rect = [
-                    screen_width as f64 * 0.95 - width,
-                    screen_height as f64 * 0.95 - height,
-                    width,
-                    height,
-                ];
-
-                // Draw the box that houses the graphs
-                rectangle([0.1, 0.05, 0.05, alpha], rect, context.transform, gl);
-                for l in rectangle_to_lines(rect).iter() {
-                    line([0.4, 0.2, 0.2, alpha], 0.5, *l, context.transform, gl);
-                }
-
-                for (counter_index, counter) in counters.iter().enumerate() {
-                    for line_segment in perf_counter_stream.iter_lines_for_counter(*counter) {
-                        let ((instant1, value1), (instant2, value2)) = graph_extents.relative_to_extents(line_segment);
-
-                        if instant1 > 1.0 || instant2 > 1.0 {
-                            break;
-                        }
-
-                        // Leave two pixels for the top/bottom borders
-                        let height = height - 2.0;
-
-                        let l = [
-                            rect[0] + width - instant1 * width,
-                            rect[1] + height - value1 * height + 1.0,
-                            rect[0] + width - instant2 * width,
-                            rect[1] + height - value2 * height + 1.0,
-                        ];
-
-                        line(colors[counter_index], 0.2, l, context.transform, gl);
+                    if instant1 > 1.0 || instant2 > 1.0 {
+                        break;
                     }
+
+                    // Leave two pixels for the top/bottom borders
+                    let height = height - 2.0;
+
+                    let l = [
+                        rect[0] + width - instant1 * width,
+                        rect[1] + height - value1 * height + 1.0,
+                        rect[0] + width - instant2 * width,
+                        rect[1] + height - value2 * height + 1.0,
+                    ];
+
+                    line(colors[counter_index], 0.2, l,
+                         self.context.transform, self.gl_graphics);
                 }
             }
-        });
+        }
     }
 }
 
 pub struct SetCameraTarget<'a> {
     pub gl_graphics: &'a mut GlGraphics,
     pub render_args: RenderArgs,
+    pub context: Context,
 }
 
 impl <'a, 'b> System<'a> for SetCameraTarget<'b> {
@@ -873,6 +889,7 @@ impl <'a> System<'a> for UpdateCamera {
 pub struct SetScreenSize<'a> {
     pub gl_graphics: &'a mut GlGraphics,
     pub render_args: RenderArgs,
+    pub context: Context,
 }
 
 impl <'a, 'b> System<'a> for SetScreenSize<'b> {
@@ -887,32 +904,57 @@ impl <'a, 'b> System<'a> for SetScreenSize<'b> {
 pub fn run_draw_systems(specs_world: &mut World,
                         gl_graphics: &mut GlGraphics,
                         render_args: RenderArgs) {
-    SetScreenSize { gl_graphics, render_args }
-        .run_now(&mut specs_world.res);
+    gl_graphics.draw(render_args.viewport(), |context, gl_graphics| {
+        SetScreenSize { gl_graphics, render_args, context }
+            .run_now(&mut specs_world.res);
+    });
 
-    SetCameraTarget { gl_graphics, render_args }
-        .run_now(&mut specs_world.res);
+    gl_graphics.draw(render_args.viewport(), |context, gl_graphics| {
+        SetCameraTarget { gl_graphics, render_args, context }
+            .run_now(&mut specs_world.res);
 
-    UpdateCamera.run_now(&mut specs_world.res);
+        UpdateCamera.run_now(&mut specs_world.res);
 
-    ClearScreen { gl_graphics, render_args }
-        .run_now(&mut specs_world.res);
+    });
 
-    DrawRooms { gl_graphics, render_args }
-        .run_now(&mut specs_world.res);
+    gl_graphics.draw(render_args.viewport(), |context, gl_graphics| {
+        ClearScreen { gl_graphics, render_args, context }
+            .run_now(&mut specs_world.res);
 
-    DrawBalls { gl_graphics, render_args }
-        .run_now(&mut specs_world.res);
+    });
 
-    DrawChainLinks { gl_graphics, render_args }
-        .run_now(&mut specs_world.res);
+    gl_graphics.draw(render_args.viewport(), |context, gl_graphics| {
+        DrawRooms { gl_graphics, render_args, context }
+            .run_now(&mut specs_world.res);
 
-    DrawPhaseSphere { gl_graphics, render_args }
-        .run_now(&mut specs_world.res);
+    });
 
-    DrawSelectionBox { gl_graphics, render_args }
-        .run_now(&mut specs_world.res);
+    gl_graphics.draw(render_args.viewport(), |context, gl_graphics| {
+        DrawBalls { gl_graphics, render_args, context }
+            .run_now(&mut specs_world.res);
 
-    DrawPerfGraphs { gl_graphics, render_args }
-        .run_now(&mut specs_world.res);
+    });
+
+    gl_graphics.draw(render_args.viewport(), |context, gl_graphics| {
+        DrawChainLinks { gl_graphics, render_args, context }
+            .run_now(&mut specs_world.res);
+
+    });
+
+    gl_graphics.draw(render_args.viewport(), |context, gl_graphics| {
+        DrawPhaseSphere { gl_graphics, render_args, context }
+            .run_now(&mut specs_world.res);
+
+    });
+
+    gl_graphics.draw(render_args.viewport(), |context, gl_graphics| {
+        DrawSelectionBox { gl_graphics, render_args, context }
+            .run_now(&mut specs_world.res);
+
+    });
+
+    gl_graphics.draw(render_args.viewport(), |context, gl_graphics| {
+        DrawPerfGraphs { gl_graphics, render_args, context }
+            .run_now(&mut specs_world.res);
+    });
 }
